@@ -135,8 +135,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("NGU Lingo Companion - 放置游戏英语伴侣")
-        self.resize(560, 780)
-        self.setMinimumSize(480, 640)
+        self.resize(650, 880)
+        self.setMinimumSize(520, 720)
         
         # 初始化服务
         self.ocr_engine = OCREngine()
@@ -226,56 +226,75 @@ class MainWindow(QMainWindow):
 
     # ================= Tab 1: 实时解析 =================
     def init_inspector_tab(self):
-        layout = QVBoxLayout(self.tab_inspector)
-        layout.setContentsMargins(6, 8, 6, 6)
-        layout.setSpacing(7)
+        tab_vbox = QVBoxLayout(self.tab_inspector)
+        tab_vbox.setContentsMargins(0, 0, 0, 0)
+        tab_vbox.setSpacing(0)
+
+        # 1. 最外层主全景滚动区 (Outer Scroll Area)
+        self.inspector_scroll = QScrollArea()
+        self.inspector_scroll.setWidgetResizable(True)
+        self.inspector_scroll.setObjectName("inspector_scroll")
+        self.inspector_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        
+        self.inspector_content = QWidget()
+        self.inspector_content.setObjectName("inspector_content")
+        layout = QVBoxLayout(self.inspector_content)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(9)
 
         # 原文输入/展示区
         lbl_orig = QLabel("英文原文 (可编辑重查):")
-        lbl_orig.setStyleSheet("font-weight: bold; color: #4fc3f7; font-size: 12px;")
+        lbl_orig.setStyleSheet("font-weight: bold; color: #4fc3f7; font-size: 13px;")
         layout.addWidget(lbl_orig)
 
         text_row = QHBoxLayout()
         self.text_en = QTextEdit()
         self.text_en.setPlaceholderText("框选截取到的英文会在此显示，也可以直接粘贴...")
-        self.text_en.setFixedHeight(48)
+        self.text_en.setFixedHeight(54)
         text_row.addWidget(self.text_en)
 
         self.btn_retranslate = QPushButton("重新\n翻译")
-        self.btn_retranslate.setFixedWidth(55)
-        self.btn_retranslate.setFixedHeight(48)
+        self.btn_retranslate.setFixedWidth(58)
+        self.btn_retranslate.setFixedHeight(54)
         self.btn_retranslate.clicked.connect(self.manual_retranslate)
         text_row.addWidget(self.btn_retranslate)
         layout.addLayout(text_row)
 
         lbl_zh = QLabel("整句释义:")
-        lbl_zh.setStyleSheet("font-weight: bold; color: #81c784; font-size: 12px;")
+        lbl_zh.setStyleSheet("font-weight: bold; color: #81c784; font-size: 13px;")
         layout.addWidget(lbl_zh)
 
         self.text_zh = QTextEdit()
         self.text_zh.setReadOnly(True)
-        self.text_zh.setFixedHeight(40)
+        self.text_zh.setFixedHeight(46)
         layout.addWidget(self.text_zh)
 
         # 核心功能 1：按词点读气泡块 (Word Chips)
         lbl_chips_title = QLabel("🧩 句子单词块 (点击任意单词即时查词与发音):")
-        lbl_chips_title.setStyleSheet("font-weight: bold; color: #00e5ff; font-size: 12px;")
+        lbl_chips_title.setStyleSheet("font-weight: bold; color: #00e5ff; font-size: 13px;")
         layout.addWidget(lbl_chips_title)
 
+        # 单词气泡专属滚动区，长段落支持自由滚动
+        self.chips_scroll = QScrollArea()
+        self.chips_scroll.setWidgetResizable(True)
+        self.chips_scroll.setObjectName("chips_scroll")
+        self.chips_scroll.setMaximumHeight(180)
+        self.chips_scroll.setMinimumHeight(68)
         self.chips_container = QWidget()
         self.chips_container.setObjectName("chips_container")
-        self.chips_layout = FlowLayout(self.chips_container, margin=4, spacing=5)
-        layout.addWidget(self.chips_container)
+        self.chips_layout = FlowLayout(self.chips_container, margin=6, spacing=6)
+        self.chips_scroll.setWidget(self.chips_container)
+        layout.addWidget(self.chips_scroll)
 
         # 核心功能 2：智能短语/固定搭配展示区 (Phrase Chips)
         self.phrases_box = QFrame()
         self.phrases_box.setObjectName("phrases_box")
         pb_layout = QVBoxLayout(self.phrases_box)
-        pb_layout.setContentsMargins(8, 6, 8, 6)
-        pb_layout.setSpacing(4)
+        pb_layout.setContentsMargins(10, 8, 10, 8)
+        pb_layout.setSpacing(6)
         
         lbl_phrases_title = QLabel("🔗 识别到的短语 / 固定搭配 (点击查看完整短语解析):")
-        lbl_phrases_title.setStyleSheet("font-weight: bold; color: #ffb74d; font-size: 12px;")
+        lbl_phrases_title.setStyleSheet("font-weight: bold; color: #ffb74d; font-size: 13px;")
         pb_layout.addWidget(lbl_phrases_title)
 
         self.phrases_container = QWidget()
@@ -288,16 +307,16 @@ class MainWindow(QMainWindow):
         self.active_word_frame = QFrame()
         self.active_word_frame.setObjectName("active_word_frame")
         aw_layout = QVBoxLayout(self.active_word_frame)
-        aw_layout.setContentsMargins(10, 8, 10, 8)
-        aw_layout.setSpacing(5)
+        aw_layout.setContentsMargins(12, 10, 12, 10)
+        aw_layout.setSpacing(6)
 
         aw_header = QHBoxLayout()
         self.lbl_aw_word = QLabel("点击上方单词或短语查看详细释义")
-        self.lbl_aw_word.setStyleSheet("font-size: 16px; font-weight: bold; color: #00e5ff;")
+        self.lbl_aw_word.setStyleSheet("font-size: 17px; font-weight: bold; color: #00e5ff;")
         aw_header.addWidget(self.lbl_aw_word)
 
         self.lbl_aw_tag = QLabel("")
-        self.lbl_aw_tag.setStyleSheet("background: #37474f; color: #80deea; padding: 1px 6px; border-radius: 3px; font-size: 11px;")
+        self.lbl_aw_tag.setStyleSheet("background: #37474f; color: #80deea; padding: 2px 7px; border-radius: 3px; font-size: 11px;")
         self.lbl_aw_tag.hide()
         aw_header.addWidget(self.lbl_aw_tag)
         aw_header.addStretch()
@@ -316,16 +335,16 @@ class MainWindow(QMainWindow):
         aw_layout.addLayout(aw_header)
 
         self.lbl_aw_meaning = QLabel("在上方点击任意单词或短语块，这里会立刻展示词性、发音与地道释义。")
-        self.lbl_aw_meaning.setStyleSheet("color: #e0e0e0; font-size: 13px;")
+        self.lbl_aw_meaning.setStyleSheet("color: #e0e0e0; font-size: 13px; line-height: 1.4;")
         self.lbl_aw_meaning.setWordWrap(True)
         aw_layout.addWidget(self.lbl_aw_meaning)
 
         # 短语关联推荐行
         self.related_phrase_box = QWidget()
         rpb_layout = QHBoxLayout(self.related_phrase_box)
-        rpb_layout.setContentsMargins(0, 0, 0, 0)
+        rpb_layout.setContentsMargins(0, 2, 0, 0)
         self.lbl_related_title = QLabel("💡 关联短语:")
-        self.lbl_related_title.setStyleSheet("color: #ffb74d; font-size: 11px; font-weight: bold;")
+        self.lbl_related_title.setStyleSheet("color: #ffb74d; font-size: 12px; font-weight: bold;")
         rpb_layout.addWidget(self.lbl_related_title)
         self.btn_related_jump = QPushButton("")
         self.btn_related_jump.setProperty("class", "related_jump_btn")
@@ -335,7 +354,7 @@ class MainWindow(QMainWindow):
         aw_layout.addWidget(self.related_phrase_box)
 
         self.lbl_aw_lore = QLabel("")
-        self.lbl_aw_lore.setStyleSheet("color: #ffd54f; font-size: 12px; background: #2b261b; padding: 4px; border-radius: 4px;")
+        self.lbl_aw_lore.setStyleSheet("color: #ffd54f; font-size: 12px; background: #2b261b; padding: 6px; border-radius: 4px; line-height: 1.3;")
         self.lbl_aw_lore.setWordWrap(True)
         self.lbl_aw_lore.hide()
         aw_layout.addWidget(self.lbl_aw_lore)
@@ -347,7 +366,7 @@ class MainWindow(QMainWindow):
         self.lore_frame.setObjectName("lore_frame")
         lore_layout = QVBoxLayout(self.lore_frame)
         self.lbl_lore_title = QLabel("💡 NGU IDLE 专属机制与梗解析:")
-        self.lbl_lore_title.setStyleSheet("font-weight: bold; color: #ffca28; font-size: 12px;")
+        self.lbl_lore_title.setStyleSheet("font-weight: bold; color: #ffca28; font-size: 13px;")
         self.lbl_lore_content = QLabel("暂未检测到特殊游戏机制")
         self.lbl_lore_content.setWordWrap(True)
         self.lbl_lore_content.setStyleSheet("color: #fff9c4; font-size: 12px; line-height: 1.4;")
@@ -356,20 +375,22 @@ class MainWindow(QMainWindow):
         self.lore_frame.hide()
         layout.addWidget(self.lore_frame)
 
-        # 全部词汇拆解列表 (滚动区)
+        # 全部词汇拆解列表 (直接平铺在外层大滚动区内，极大释放空间，不再局促)
         lbl_words = QLabel("📋 全部词汇与短语拆解清单:")
-        lbl_words.setStyleSheet("font-weight: bold; color: #ba68c8; font-size: 12px;")
+        lbl_words.setStyleSheet("font-weight: bold; color: #ba68c8; font-size: 13px;")
         layout.addWidget(lbl_words)
 
-        self.scroll_words = QScrollArea()
-        self.scroll_words.setWidgetResizable(True)
         self.words_container = QWidget()
+        self.words_container.setObjectName("words_container")
         self.words_layout = QVBoxLayout(self.words_container)
-        self.words_layout.setContentsMargins(4, 4, 4, 4)
+        self.words_layout.setContentsMargins(0, 0, 0, 0)
         self.words_layout.setSpacing(6)
         self.words_layout.addStretch()
-        self.scroll_words.setWidget(self.words_container)
-        layout.addWidget(self.scroll_words, stretch=1)
+        layout.addWidget(self.words_container)
+
+        # 完成外层滚动区装载
+        self.inspector_scroll.setWidget(self.inspector_content)
+        tab_vbox.addWidget(self.inspector_scroll)
 
     # ================= Tab 2: 生词本 =================
     def init_notebook_tab(self):
@@ -1190,13 +1211,28 @@ class MainWindow(QMainWindow):
             QListWidget::item {
                 border-bottom: 1px solid #252530;
             }
+            #inspector_scroll, #chips_scroll {
+                border: none;
+                background-color: transparent;
+            }
+            #inspector_content {
+                background-color: transparent;
+            }
             QScrollBar:vertical {
                 border: none;
-                background: #1a1a20;
-                width: 8px;
+                background: #141419;
+                width: 9px;
+                border-radius: 4px;
             }
             QScrollBar::handle:vertical {
-                background: #444455;
+                background: #3c4056;
+                min-height: 28px;
                 border-radius: 4px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #00e5ff;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
             }
         """)
