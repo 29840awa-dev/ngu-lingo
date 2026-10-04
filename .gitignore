@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.spec
+
+# Virtual Environment
+venv/
+env/
+.env/
+
+# SQLite Database (本地个人生词本与缓存数据)
+ngu_vocab.db
+*.db
+
+# OS Temporary Files
+Thumbs.db
+.DS_Store
+
+# Log files
+*.log
