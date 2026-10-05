@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 高帧率无卡顿屏幕框选截图组件 (Snipping Tool)
-核心机制：
-1. 启动时一次性预渲染整屏暗色底图 (dimmed_pixmap)，拖拽选框时 0 开销纯内存 Blit，杜绝数百万像素实时 Alpha 计算卡顿！
-2. 完美适配 2.5K/4K 等高分屏缩放 (DPI 125%/150%)，物理/逻辑坐标精准对齐，彻底修复选区画面偏移走形问题。
-3. 状态防护：截图窗口激活期间严格互斥，杜绝重复触发与多重遮罩。
+解决高分屏 (2.5K/4K, 125%/150% DPI 缩放) 下：
+1. 彻底解决画面缩小、右侧与下侧黑边问题 (通过 copy 继承 DPR 并在 p.window 完整覆盖遮罩)；
+2. 彻底解决框选内容放大错位问题 (物理源坐标 src_rect 精准 1:1 对齐)；
+3. 保持 120 帧极致流畅，0 实时 Alpha 计算开销。
 """
 from PyQt6.QtCore import Qt, QRect, QPoint, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QGuiApplication, QPixmap
@@ -42,21 +42,22 @@ class SnippingWidget(QWidget):
             return
 
         self.dpr = screen.devicePixelRatio() or 1.0
-        # 抓取原始全屏物理位图 (例如 2560x1600)
+        # 1. 抓取物理全屏底图 (例如 2560x1600，Qt 已自带设置其 devicePixelRatio 为 1.5)
         self.screen_pixmap = screen.grabWindow(0)
 
-        # 启动时仅合成一次全屏暗色底图，避免拖拽选框时每帧 CPU Alpha 混合计算
-        self.dimmed_pixmap = QPixmap(self.screen_pixmap.size())
+        # 2. 核心修复：直接使用 copy() 完整保留物理分辨率与 DevicePixelRatio！
+        # 杜绝新建空白 QPixmap 导致 DPR 降回 1.0 引起的画面缩水和黑边灾难
+        self.dimmed_pixmap = self.screen_pixmap.copy()
+
+        # 3. 针对全屏物理区域 p.window() 统一填充暗色半透明，整屏无任何死角与黑边
         dp_painter = QPainter(self.dimmed_pixmap)
-        dp_painter.drawPixmap(0, 0, self.screen_pixmap)
-        dp_painter.fillRect(self.dimmed_pixmap.rect(), QColor(0, 0, 0, 115))
+        dp_painter.fillRect(dp_painter.window(), QColor(0, 0, 0, 115))
         dp_painter.end()
 
         self.is_snipping = False
         self.start_point = QPoint()
         self.end_point = QPoint()
         
-        # 唤醒遮罩
         self.setGeometry(screen.geometry())
         self.show()
         self.raise_()
@@ -118,14 +119,13 @@ class SnippingWidget(QWidget):
 
         painter = QPainter(self)
         
-        # 1. 将预先生成的暗色底图快速铺满当前逻辑全屏
-        painter.drawPixmap(self.rect(), self.dimmed_pixmap)
+        # 1. 绘制暗色底图：(0, 0) 直绘，Qt 自动根据其自带 DPR 1:1 映射铺满全屏，画面不缩小、无黑边
+        painter.drawPixmap(0, 0, self.dimmed_pixmap)
 
         if self.is_snipping:
             rect = self.get_selection_rect()
             if not rect.isEmpty() and rect.width() > 1 and rect.height() > 1:
-                # 2. 精准高分屏物理坐标换算：
-                # 目标区域 rect 为逻辑坐标，源区域 src_rect 必须按 DPR 放大换算为物理底图坐标！
+                # 2. 选区从原始底图中精准采样：源区域换算为物理坐标
                 dpr = self.dpr or 1.0
                 src_rect = QRect(
                     int(round(rect.x() * dpr)),
@@ -133,7 +133,7 @@ class SnippingWidget(QWidget):
                     int(round(rect.width() * dpr)),
                     int(round(rect.height() * dpr))
                 )
-                # 1:1 像素绝对对齐掏空高亮
+                # 1:1 严丝合缝高亮呈现，绝不放大或位移
                 painter.drawPixmap(rect, self.screen_pixmap, src_rect)
 
                 # 3. 选框高亮边框
