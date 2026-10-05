@@ -24,7 +24,7 @@ from snipper import SnippingWidget
 from ocr_engine import OCREngine, fix_jammed_words
 from translator import TranslationService
 from phrase_matcher import PhraseMatcher
-from ngu_knowledge import NGU_GLOSSARY, detect_ngu_terms
+from ngu_knowledge import NGU_GLOSSARY, detect_ngu_terms, is_settings_menu_text, NGU_SETTINGS_GUIDE
 import database
 
 # 智能双模滚动区组件：
@@ -608,6 +608,55 @@ class MainWindow(QMainWindow):
 
             kw_low = kw.lower().strip()
             insert_idx = 0
+
+            # 优先在最顶部展示【游戏系统全设置中文对照】指南卡片
+            if not kw_low or any(k in kw_low for k in ["setting", "设置", "选项", "titan", "filter", "loadout"]):
+                settings_card = QFrame()
+                settings_card.setObjectName("glossary_card")
+                settings_card.setStyleSheet("""
+                    #glossary_card {
+                        background-color: #17212b;
+                        border: 1px solid #00bcd4;
+                        border-radius: 6px;
+                    }
+                """)
+                scl = QVBoxLayout(settings_card)
+                scl.setContentsMargins(10, 8, 10, 8)
+                scl.setSpacing(6)
+                
+                s_header = QHBoxLayout()
+                s_title = QLabel("⚙️ <b>NGU 游戏系统与全部设置项中文攻略</b>")
+                s_title.setStyleSheet("font-size: 13px; color: #80deea; font-weight: bold;")
+                s_tag = QLabel("系统全指南")
+                s_tag.setStyleSheet("background: #00838f; color: white; padding: 1px 6px; border-radius: 3px; font-size: 10px;")
+                s_header.addWidget(s_title, stretch=1)
+                s_header.addWidget(s_tag)
+                scl.addLayout(s_header)
+
+                desc_lbl = QLabel("全 4 大设置面板（SOME/MORE SETTINGS、LOOT FILTER 掉落过滤、SHEDDINGS 进阶设置）全功能中文释义与老玩家推荐配置：")
+                desc_lbl.setStyleSheet("color: #b0bec5; font-size: 11px;")
+                desc_lbl.setWordWrap(True)
+                scl.addWidget(desc_lbl)
+
+                for panel in NGU_SETTINGS_GUIDE:
+                    p_box = QFrame()
+                    p_box.setStyleSheet("background: #11141c; border-radius: 4px;")
+                    p_l = QVBoxLayout(p_box)
+                    p_l.setContentsMargins(6, 5, 6, 5)
+                    p_l.setSpacing(3)
+                    p_title = QLabel(f"<b>📌 {panel['panel']}</b>")
+                    p_title.setStyleSheet("color: #ffd54f; font-size: 12px;")
+                    p_l.addWidget(p_title)
+                    for name, opt, tip in panel["items"]:
+                        item_lbl = QLabel(f"• <b>{name}</b><br>&nbsp;&nbsp;<font color='#80cbc4'>选项: {opt}</font><br>&nbsp;&nbsp;<font color='#a5d6a7'>建议: {tip}</font>")
+                        item_lbl.setStyleSheet("color: #cfd8dc; font-size: 11px; margin-bottom: 2px;")
+                        item_lbl.setWordWrap(True)
+                        p_l.addWidget(item_lbl)
+                    scl.addWidget(p_box)
+
+                glossary_layout.insertWidget(insert_idx, settings_card)
+                insert_idx += 1
+
             for key, val in NGU_GLOSSARY.items():
                 if not kw_low or kw_low in key or kw_low in val['cn'].lower() or kw_low in val['lore'].lower():
                     card = QFrame()
@@ -687,9 +736,12 @@ class MainWindow(QMainWindow):
         self.text_en.setPlainText(full_text)
         self.text_zh.setPlainText(translation)
         
-        status_msg = f"识别完成，提取到 {len(words_detail)} 个词汇"
-        if phrases_detail:
-            status_msg += f"，检测到 {len(phrases_detail)} 个短语！"
+        if is_settings_menu_text(full_text):
+            status_msg = "🎮 智能识别为【NGU 游戏系统设置菜单】，已按列解析全功能中文对照与推荐"
+        else:
+            status_msg = f"识别完成，提取到 {len(words_detail)} 个词汇"
+            if phrases_detail:
+                status_msg += f"，检测到 {len(phrases_detail)} 个短语！"
         self.status_label.setText(status_msg)
 
         # 1. 渲染点击单词气泡块 (Word Chips)
@@ -721,11 +773,23 @@ class MainWindow(QMainWindow):
             if item.widget():
                 item.widget().deleteLater()
 
+        is_menu = is_settings_menu_text(sentence) or "\n" in sentence
         tokens = re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?|[^\s\w]", sentence)
         first_word_chip = None
+        seen_words = set()
+        noise = {"on", "off", "yes", "no", "true", "false", "plain", "fancy", "some", "more"}
 
         for token in tokens:
             if re.match(r"[A-Za-z]", token):
+                low = token.lower()
+                # 菜单/多列模式下，过滤高频UI杂音并去重
+                if is_menu:
+                    if len(token) == 1 and low not in ('a', 'i'):
+                        continue
+                    if low in noise or low in seen_words:
+                        continue
+                    seen_words.add(low)
+
                 btn = QPushButton(token)
                 btn.setProperty("class", "word_chip")
                 btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -733,7 +797,8 @@ class MainWindow(QMainWindow):
                 self.chips_layout.addWidget(btn)
                 if not first_word_chip:
                     first_word_chip = (token, btn)
-            else:
+            elif not is_menu:
+                # 仅在非菜单的普通自然句中渲染标点符号
                 punct_lbl = QLabel(token)
                 punct_lbl.setStyleSheet("color: #888888; font-size: 13px; font-weight: bold; padding: 2px 0px;")
                 self.chips_layout.addWidget(punct_lbl)

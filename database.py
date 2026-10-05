@@ -43,6 +43,8 @@ def init_db():
     """)
     # 自动清理历史遗留被截断带有省略号的残缺释义
     cursor.execute("DELETE FROM dict_cache WHERE translation LIKE '%...' OR translation LIKE '%…'")
+    # 自动清理历史遗留的 API 报错信息
+    cursor.execute("DELETE FROM sentence_cache WHERE zh_trans LIKE '%LIMIT%' OR zh_trans LIKE '%MYMEMORY%' OR zh_trans LIKE '%EXCEEDED%'")
     conn.commit()
 
     # 如果是首次启动且生词本为空，插入几个经典的 NGU 示范词卡
@@ -161,10 +163,18 @@ def get_cached_sentence(text: str):
     cursor.execute("SELECT zh_trans FROM sentence_cache WHERE hash = ?", (h,))
     row = cursor.fetchone()
     conn.close()
-    return row[0] if row else None
+    if row and row[0]:
+        val = row[0].strip()
+        if "LIMIT EXCEEDED" in val.upper() or "MYMEMORY" in val.upper():
+            return None
+        return val
+    return None
 
 def set_cached_sentence(text: str, trans: str):
     if not text or not text.strip() or not trans or not trans.strip():
+        return
+    upper_trans = trans.upper()
+    if "LIMIT EXCEEDED" in upper_trans or "MYMEMORY" in upper_trans or "ERROR" in upper_trans:
         return
     import hashlib
     h = hashlib.md5(text.strip().lower().encode('utf-8')).hexdigest()

@@ -9,7 +9,7 @@
 import re
 import requests
 import concurrent.futures
-from ngu_knowledge import NGU_GLOSSARY, detect_ngu_terms
+from ngu_knowledge import NGU_GLOSSARY, detect_ngu_terms, is_settings_menu_text, get_settings_guide_markdown
 import database
 
 # 常见放置/RPG 通用基础词典
@@ -108,7 +108,11 @@ class TranslationService:
         if not clean_text:
             return ""
 
-        # 1. 优先查本地 SQLite 句子永久缓存
+        # 1. 智能检测是否为 NGU 系统设置界面，直接输出结构化全设置汉化指南
+        if is_settings_menu_text(clean_text):
+            return get_settings_guide_markdown()
+
+        # 2. 优先查本地 SQLite 句子永久缓存
         try:
             cached = database.get_cached_sentence(clean_text)
             if cached:
@@ -116,7 +120,7 @@ class TranslationService:
         except Exception:
             pass
 
-        # 2. 多引擎并发极速竞速
+        # 3. 多引擎并发极速竞速
         import urllib.parse
 
         def fetch_google():
@@ -142,12 +146,17 @@ class TranslationService:
             raise RuntimeError("Youdao mobile translate failed")
 
         def fetch_mymemory():
+            # MyMemory 有 500 字符硬性上限，长文本主动跳过避免触发限制报错
+            if len(clean_text) > 380:
+                raise RuntimeError("Query too long for MyMemory")
             url = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(clean_text)}&langpair=en|zh-CN"
             r = self.session.get(url, headers=self.headers, timeout=3.5)
             if r.status_code == 200:
                 res = r.json().get('responseData', {}).get('translatedText', '')
-                if res and not res.startswith("MYMEMORY") and res.strip().lower() != clean_text.lower():
-                    return res.strip()
+                if res:
+                    res_upper = res.upper()
+                    if "LIMIT EXCEEDED" not in res_upper and not res_upper.startswith("MYMEMORY") and "INVALID" not in res_upper and res.strip().lower() != clean_text.lower():
+                        return res.strip()
             raise RuntimeError("MyMemory translate failed")
 
         def fetch_youdao_aidemo():
@@ -175,7 +184,7 @@ class TranslationService:
                 except Exception:
                     continue
 
-        # 3. 若全部网络请求超时或处于断网环境，进行离线兜底提示
+        # 4. 若全部网络请求超时或处于断网环境，进行离线兜底提示
         words = self.extract_words(clean_text)
         known = []
         for w in words:
@@ -190,9 +199,19 @@ class TranslationService:
         return "（未识别到联网整句释义，请检查网络后点击【重新翻译】）"
 
     def extract_words(self, text: str):
-        """从句子中提取纯英文单词列表"""
+        """从句子中提取纯英文单词列表（过滤单字母及高频UI开关杂音，如 On/Off/Yes/No）"""
         words = re.findall(r"\b[A-Za-z]+(?:'[A-Za-z]+)?\b", text)
-        return list(dict.fromkeys(words))
+        filtered = []
+        noise = {"on", "off", "yes", "no", "true", "false", "plain", "fancy", "some", "more"}
+        is_long_or_menu = len(words) > 8 or is_settings_menu_text(text)
+        for w in dict.fromkeys(words):
+            low = w.lower()
+            if len(w) == 1 and low not in ('a', 'i'):
+                continue
+            if is_long_or_menu and low in noise:
+                continue
+            filtered.append(w)
+        return filtered
 
     def fetch_word_online(self, word: str):
         """在线查询单词完整释义与精准音标（采用完整词典接口，彻底杜绝省略号截断）"""

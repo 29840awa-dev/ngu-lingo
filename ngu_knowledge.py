@@ -340,8 +340,203 @@ NGU_GLOSSARY = {
         "cn": "废话梗 / 搞笑剧情 / 弱鸡毛团",
         "lore": "在 NGU 中，作者 4G 经常把纯搞笑无厘头的剧情调侃为「Fluff」（填充废话/闲聊梗）。这里也常用来戏谑主角虚弱得像个毛团。",
         "type": "游戏梗与俚语"
+    },
+
+    # === 系统设置与选项 (Settings & UI Options) ===
+    "automatically kill titans": {
+        "word": "Automatically Kill Titans",
+        "phonetic": "/ˌɔːtəˈmætɪkli kɪl ˈtaɪtnz/",
+        "pos": "phrase",
+        "cn": "自动击杀泰坦",
+        "lore": "【必须开启 (On)】NGU 挂机核心神技！泰坦 Boss 每隔固定时间（如1小时）刷新，开启后系统会自动切换去打掉，无需人工蹲守，彻底解放双手！",
+        "type": "系统设置"
+    },
+    "loadout swap": {
+        "word": "Loadout Swap",
+        "phonetic": "/ˈləʊdaʊt swɒp/",
+        "pos": "phrase",
+        "cn": "装备预设切换",
+        "lore": "指在不同的装备预设方案（如金币套、爆率套、攻击套）之间一键切换。",
+        "type": "系统设置"
+    },
+    "unassign e/m on loadout swap": {
+        "word": "Unassign E/M on Loadout Swap",
+        "phonetic": "",
+        "pos": "phrase",
+        "cn": "换装时自动卸下能量/魔法",
+        "lore": "【强烈推荐开启 (Yes)】切换配装预设时，自动卸回已分配给技能的 E/M。避免换掉加 Cap 属性的装备导致能量上限缩水从而浪费溢出资源！",
+        "type": "系统设置"
+    },
+    "autoboost recycled boosts": {
+        "word": "Autoboost Recycled Boosts",
+        "phonetic": "",
+        "pos": "phrase",
+        "cn": "自动强化回收加成块",
+        "lore": "【推荐开启 (On)】在装备栏或回收系统收到低阶 Boost 块时，系统自动将其消耗用来强化你身上的装备，省去手动拖拽强化的繁琐操作。",
+        "type": "系统设置"
+    },
+    "anti fast bar flicker": {
+        "word": "Anti Fast Bar Flicker",
+        "phonetic": "",
+        "pos": "phrase",
+        "cn": "防充能条高频闪烁（护眼模式）",
+        "lore": "【强烈推荐开启 (On)】当充能条达到 50 帧瞬间满条时，画面会高频狂闪。开启后平滑渲染，极大缓解眼部疲劳！",
+        "type": "系统设置"
+    },
+    "sync training": {
+        "word": "Sync Training",
+        "phonetic": "/sɪŋk ˈtreɪnɪŋ/",
+        "pos": "phrase",
+        "cn": "同步物理与能量训练等级",
+        "lore": "【推荐开启 (On)】开启后，物理攻击 (Physical) 与能量防御 (Energy) 训练等级自动同步分配，无需两边分开手动点。",
+        "type": "系统设置"
+    },
+    "loot filter": {
+        "word": "Loot Filter",
+        "phonetic": "/luːt ˈfɪltə(r)/",
+        "pos": "phrase",
+        "cn": "战利品/掉落过滤器",
+        "lore": "挂机刷怪防爆仓神器！总开关开启后，被选中的部位装备爆出时会被自动丢弃/摧毁。",
+        "type": "系统设置"
+    },
+    "filter titan loot": {
+        "word": "Filter Titan Loot",
+        "phonetic": "",
+        "pos": "phrase",
+        "cn": "是否过滤泰坦战利品",
+        "lore": "【未毕业前务必关闭 (Off)】开启后泰坦掉落专属装备也会被掉落过滤器丢弃！若误开可能导致辛苦刷到的泰坦极品装备直接消失！",
+        "type": "系统设置"
+    },
+    "itopod perk confirmation": {
+        "word": "ITOPOD Perk Confirmation Box",
+        "phonetic": "",
+        "pos": "phrase",
+        "cn": "ITOPOD 特权购买二次确认框",
+        "lore": "【推荐开启 (On)】购买爬塔特权时弹窗二次确认，防止鼠标误触点错昂贵的 AP 点数。",
+        "type": "系统设置"
+    },
+    "exp purchase confirmation": {
+        "word": "EXP Purchase Confirmation Popups",
+        "phonetic": "",
+        "pos": "phrase",
+        "cn": "EXP 消费确认弹窗",
+        "lore": "【新手建议开启 (On)】在消耗巨额 EXP 购买属性时弹窗二次确认，防止手滑买错。",
+        "type": "系统设置"
+    },
+    "timed tooltips": {
+        "word": "Timed Tooltips",
+        "phonetic": "/taɪmd ˈtuːltɪps/",
+        "pos": "phrase",
+        "cn": "定时延时悬浮提示",
+        "lore": "鼠标悬停在物品上延迟显示详细提示框，防止鼠标滑过界面时到处弹框影响视线。",
+        "type": "系统设置"
+    },
+    "titan hp bars": {
+        "word": "Titan HP Bars",
+        "phonetic": "",
+        "pos": "phrase",
+        "cn": "泰坦血条样式",
+        "lore": "Fancy 为华丽渐变血条，Plain 为朴素简易血条。依个人喜好自选。",
+        "type": "系统设置"
+    },
+    "number display style": {
+        "word": "Number Display Style",
+        "phonetic": "",
+        "pos": "phrase",
+        "cn": "数字显示风格",
+        "lore": "Scientific (科学计数法 1.23e8) / Suffix (字母后缀 123M, 1.2B) / Engineering (工程计数法)。推荐【Suffix】最直观。",
+        "type": "系统设置"
+    },
+    "ui themes": {
+        "word": "UI Themes",
+        "phonetic": "",
+        "pos": "phrase",
+        "cn": "界面配色主题",
+        "lore": "Normal (白底明亮) / Dark (暗黑护眼) / Gold (金黄色) / Dark Gold (暗金)。强烈推荐【Dark】暗色模式！",
+        "type": "系统设置"
+    },
+    "shakey sales text": {
+        "word": "Shakey Sales Text",
+        "phonetic": "",
+        "pos": "phrase",
+        "cn": "商店折扣文字晃动特效",
+        "lore": "商城有促销时文字晃动特效。若觉得晃眼可关闭 (Off)。",
+        "type": "系统设置"
+    },
+    "submit highscores": {
+        "word": "Submit Highscores",
+        "phonetic": "",
+        "pos": "phrase",
+        "cn": "提交排行榜分数",
+        "lore": "将游戏天数与转生分数上传至平台排行榜。",
+        "type": "系统设置"
     }
 }
+
+# 完整的 NGU 系统设置中文指南与最佳实践推荐表
+NGU_SETTINGS_GUIDE = [
+    {
+        "panel": "SOME SETTINGS (基础设置)",
+        "items": [
+            ("Resolutions (分辨率)", "960*600 / 1280*800 / 1440*900 / 1680*1050", "依屏幕尺寸自选，一般选 1280*800 或 1440*900 最清晰舒服"),
+            ("Number Display Style (数字显示风格)", "Scientific (科学计数) / Suffix (字母后缀 如K,M,B) / Engineering (工程计数)", "强烈推荐【Suffix】，直观符合放置 RPG 习惯"),
+            ("UI Themes (界面主题配色)", "Normal (普通白) / Dark (暗色护眼) / Gold (金黄) / Dark Gold (暗金)", "强烈推荐【Dark】，长期挂机非常护眼")
+        ]
+    },
+    {
+        "panel": "MORE SETTINGS (高级辅助)",
+        "items": [
+            ("Tooltips (悬浮提示)", "On (开) / Off (关)", "必须【开启 (On)】，查看装备属性与作者搞笑梗核心来源"),
+            ("Timed Tooltips (延时提示)", "On (开) / Off (关)", "自选，开启后鼠标悬停片刻才会弹出提示框，防止滑动时乱跳"),
+            ("Automatically Kill Titans (自动击杀泰坦)", "On (开) / Off (关)", "【挂机神技·必开 (On)】泰坦每小时刷新时自动过去打掉，无需人工蹲守！"),
+            ("Check For Updates (检查更新)", "On (开) / Off (关)", "建议【开启 (On)】，自动检测游戏新版本"),
+            ("Titan HP Bars (泰坦血条显示)", "Fancy (华丽渐变) / Plain (简易朴素)", "自选，Fancy 视觉效果更好"),
+            ("Anti Fast Bar Flicker (防充能条闪烁)", "On (开) / Off (关)", "【护眼必备·必开 (On)】满帧率跑条时防刺眼高频闪烁"),
+            ("Sync Training (同步物理/能量训练)", "On (开) / Off (关)", "【推荐开启 (On)】自动同步物理和能量训练升级，省去两头分别点的麻烦")
+        ]
+    },
+    {
+        "panel": "LOOT FILTER (掉落过滤器)",
+        "items": [
+            ("Filter Titan Loot (过滤泰坦战利品)", "On (开) / Off (关)", "【未毕业前千万别开·务必关闭 (Off)】开启后泰坦掉的专属极品装备也会被过滤摧毁！"),
+            ("FILTER LOOT BY TYPE (按部位过滤)", "Head(头), Chest(胸), Legs(腿), Boots(鞋), Weapon(武器), Accessory(饰品), Boosts(加成块), Misc(杂项)", "挂机防爆仓神器！总开关开启后，被选中的部位掉落时会自动摧毁，挂机前记得只过滤已毕业的部位")
+        ]
+    },
+    {
+        "panel": "SHEDDINGS (进阶与防误触)",
+        "items": [
+            ("Autoboost Recycled Boosts (自动强化回收块)", "On (开) / Off (关)", "【进阶推荐·开启 (On)】收到回收的低阶加成块时自动用来强化身上装备"),
+            ("Unassign E/M on Loadout Swap? (换装时卸下E/M)", "Yes (是) / No (否)", "【必开·强烈推荐 (Yes)】换装时自动卸下能量魔法，防止由于Cap变低导致溢出资源白白蒸发！"),
+            ("EXP Purchase Confirmation Popups (EXP购买确认)", "On (开) / Off (关)", "【新手推荐·开启 (On)】消耗巨额 EXP 时弹窗二次确认，防手滑点错"),
+            ("ITOPOD Perk Confirmation Box (爬塔特权确认)", "On (开) / Off (关)", "【强烈推荐·开启 (On)】购买爬塔特权时二次确认，防止误买昂贵错技能"),
+            ("Shakey Sales Text (商店折扣文字晃动)", "On (开) / Off (关)", "打折晃动特效，觉得眼花可关闭 (Off)"),
+            ("Submit Highscores (提交平台排行榜)", "On (开) / Off (关)", "将游戏进度与分数上传到 Steam/Kongregate 排行榜，自选")
+        ]
+    }
+]
+
+def is_settings_menu_text(text: str) -> bool:
+    """智能检测识别文本是否为 NGU 游戏设置界面"""
+    t_low = text.lower()
+    keywords = [
+        "setting", "resolutions", "tooltips", "loot filter", "shedding", 
+        "automatically kill titans", "loadout swap", "autoboost", "anti fast bar",
+        "sync training", "itopod perk", "filter titan loot"
+    ]
+    matched_count = sum(1 for kw in keywords if kw in t_low)
+    return matched_count >= 2
+
+def get_settings_guide_markdown() -> str:
+    """生成排版精美的 NGU 设置指南全攻略文本"""
+    lines = ["🎮【NGU 游戏系统与全部设置项汉化与推荐配置】\n"]
+    for panel in NGU_SETTINGS_GUIDE:
+        lines.append(f"📌 {panel['panel']}:")
+        for name, opt, tip in panel["items"]:
+            lines.append(f"  • {name}")
+            lines.append(f"    - 选项: {opt}")
+            lines.append(f"    - 攻略建议: {tip}")
+        lines.append("")
+    return "\n".join(lines)
 
 def detect_ngu_terms(text: str):
     """
