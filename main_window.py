@@ -10,7 +10,7 @@ import re
 import random
 from PIL import Image
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QBuffer, QIODevice, QPoint, QRect, QSize
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QBuffer, QIODevice, QPoint, QRect, QSize, QEvent, QObject
 from PyQt6.QtGui import QIcon, QFont, QColor
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -26,6 +26,39 @@ from translator import TranslationService
 from phrase_matcher import PhraseMatcher
 from ngu_knowledge import NGU_GLOSSARY, detect_ngu_terms
 import database
+
+# 独立滚轮滚动区组件：无论内层滚动条是否滑到底/滑到顶，彻底拦截滚轮事件，防止外层大页面滑动穿透
+class IsolatedScrollArea(QScrollArea):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.viewport().installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if obj == self.viewport() and event.type() == QEvent.Type.Wheel:
+            delta = event.angleDelta().y()
+            sb = self.verticalScrollBar()
+            if sb and delta != 0:
+                step = (delta // 15) * 22
+                sb.setValue(sb.value() - step)
+            event.accept()
+            return True
+        return super().eventFilter(obj, event)
+
+class IsolatedWheelFilter(QObject):
+    def __init__(self, target_widget):
+        super().__init__(target_widget)
+        self.target = target_widget
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Wheel:
+            delta = event.angleDelta().y()
+            sb = self.target.verticalScrollBar()
+            if sb and delta != 0:
+                step = (delta // 15) * 20
+                sb.setValue(sb.value() - step)
+            event.accept()
+            return True
+        return super().eventFilter(obj, event)
 
 # 自动折行的流式布局组件 (FlowLayout)
 class FlowLayout(QLayout):
@@ -135,8 +168,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("NGU Lingo Companion - 放置游戏英语伴侣")
-        self.resize(650, 880)
-        self.setMinimumSize(520, 720)
+        self.resize(680, 920)
+        self.setMinimumSize(540, 740)
         
         # 初始化服务
         self.ocr_engine = OCREngine()
@@ -274,17 +307,23 @@ class MainWindow(QMainWindow):
         lbl_chips_title.setStyleSheet("font-weight: bold; color: #00e5ff; font-size: 13px;")
         layout.addWidget(lbl_chips_title)
 
-        # 单词气泡专属滚动区，长段落支持自由滚动
-        self.chips_scroll = QScrollArea()
+        # 单词气泡专属滚动区：空间大幅扩充至 150~280px，并搭载防穿透独立滚轮
+        self.chips_scroll = IsolatedScrollArea()
         self.chips_scroll.setWidgetResizable(True)
         self.chips_scroll.setObjectName("chips_scroll")
-        self.chips_scroll.setMaximumHeight(180)
-        self.chips_scroll.setMinimumHeight(68)
+        self.chips_scroll.setMinimumHeight(150)
+        self.chips_scroll.setMaximumHeight(280)
         self.chips_container = QWidget()
         self.chips_container.setObjectName("chips_container")
         self.chips_layout = FlowLayout(self.chips_container, margin=6, spacing=6)
         self.chips_scroll.setWidget(self.chips_container)
         layout.addWidget(self.chips_scroll)
+
+        # 为原文和释义输入框同样安装滚轮防穿透滤镜
+        self.text_en_filter = IsolatedWheelFilter(self.text_en)
+        self.text_en.viewport().installEventFilter(self.text_en_filter)
+        self.text_zh_filter = IsolatedWheelFilter(self.text_zh)
+        self.text_zh.viewport().installEventFilter(self.text_zh_filter)
 
         # 核心功能 2：智能短语/固定搭配展示区 (Phrase Chips)
         self.phrases_box = QFrame()
