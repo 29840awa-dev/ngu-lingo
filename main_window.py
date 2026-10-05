@@ -250,12 +250,12 @@ class MainWindow(QMainWindow):
         text_row = QHBoxLayout()
         self.text_en = QTextEdit()
         self.text_en.setPlaceholderText("框选截取到的英文会在此显示，也可以直接粘贴...")
-        self.text_en.setFixedHeight(54)
+        self.text_en.setFixedHeight(115)
         text_row.addWidget(self.text_en)
 
         self.btn_retranslate = QPushButton("重新\n翻译")
-        self.btn_retranslate.setFixedWidth(58)
-        self.btn_retranslate.setFixedHeight(54)
+        self.btn_retranslate.setFixedWidth(64)
+        self.btn_retranslate.setFixedHeight(115)
         self.btn_retranslate.clicked.connect(self.manual_retranslate)
         text_row.addWidget(self.btn_retranslate)
         layout.addLayout(text_row)
@@ -266,7 +266,7 @@ class MainWindow(QMainWindow):
 
         self.text_zh = QTextEdit()
         self.text_zh.setReadOnly(True)
-        self.text_zh.setFixedHeight(46)
+        self.text_zh.setFixedHeight(85)
         layout.addWidget(self.text_zh)
 
         # 核心功能 1：按词点读气泡块 (Word Chips)
