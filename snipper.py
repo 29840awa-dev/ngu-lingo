@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 高帧率无卡顿屏幕框选截图组件 (Snipping Tool)
-核心优化：
-1. 启动时一次性预渲染暗色遮罩底图 (dimmed_pixmap)，拖拽选框时 0 开销纯内存 Blit，彻底告别 400 万像素 CPU 实时 Alpha 混合计算卡顿！
-2. 完美适配 2.5K/4K 等高分屏缩放 (DPI 125%/150%)，设置 devicePixelRatio 杜绝模糊与重采样。
-3. 使用 setGeometry + show 代替 Windows DWM 全屏切换，唤醒 0 延迟。
-4. 开启 WA_OpaquePaintEvent 与 WA_NoSystemBackground，杜绝闪烁。
+核心机制：
+1. 启动时一次性预渲染整屏暗色底图 (dimmed_pixmap)，拖拽选框时 0 开销纯内存 Blit，杜绝数百万像素实时 Alpha 计算卡顿！
+2. 完美适配 2.5K/4K 等高分屏缩放 (DPI 125%/150%)，物理/逻辑坐标精准对齐，彻底修复选区画面偏移走形问题。
+3. 状态防护：截图窗口激活期间严格互斥，杜绝重复触发与多重遮罩。
 """
 from PyQt6.QtCore import Qt, QRect, QPoint, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QGuiApplication, QPixmap
@@ -35,29 +34,29 @@ class SnippingWidget(QWidget):
 
     def start_snip(self):
         """抓取当前屏幕并启动全屏遮罩"""
+        if self.isVisible():
+            return
+
         screen = QGuiApplication.primaryScreen()
         if not screen:
             return
 
-        self.dpr = screen.devicePixelRatio()
-        # 1. 高速抓取物理像素全屏底图
+        self.dpr = screen.devicePixelRatio() or 1.0
+        # 抓取原始全屏物理位图 (例如 2560x1600)
         self.screen_pixmap = screen.grabWindow(0)
-        self.screen_pixmap.setDevicePixelRatio(self.dpr)
 
-        # 2. 关键优化：预先渲染整屏暗色底图，仅在启动时计算一次！
-        # 避免在 2560x1600 (410万像素) 高分屏下拖拽鼠标时每帧进行耗时数十毫秒的 CPU Alpha 运算
+        # 启动时仅合成一次全屏暗色底图，避免拖拽选框时每帧 CPU Alpha 混合计算
         self.dimmed_pixmap = QPixmap(self.screen_pixmap.size())
-        self.dimmed_pixmap.setDevicePixelRatio(self.dpr)
         dp_painter = QPainter(self.dimmed_pixmap)
         dp_painter.drawPixmap(0, 0, self.screen_pixmap)
-        dp_painter.fillRect(QRect(0, 0, int(self.screen_pixmap.width()), int(self.screen_pixmap.height())), QColor(0, 0, 0, 115))
+        dp_painter.fillRect(self.dimmed_pixmap.rect(), QColor(0, 0, 0, 115))
         dp_painter.end()
 
         self.is_snipping = False
         self.start_point = QPoint()
         self.end_point = QPoint()
         
-        # 3. 避免 OS 切换全屏的重绘延迟
+        # 唤醒遮罩
         self.setGeometry(screen.geometry())
         self.show()
         self.raise_()
@@ -81,20 +80,18 @@ class SnippingWidget(QWidget):
         if event.button() == Qt.MouseButton.LeftButton and self.is_snipping:
             self.is_snipping = False
             rect = self.get_selection_rect()
-            # 立即隐藏，消除遮罩残留
             self.hide()
             
             # 过滤过小的无效点击
             if rect.width() > 10 and rect.height() > 10 and self.screen_pixmap:
                 dpr = self.dpr or 1.0
                 src_rect = QRect(
-                    int(rect.x() * dpr),
-                    int(rect.y() * dpr),
-                    int(rect.width() * dpr),
-                    int(rect.height() * dpr)
+                    int(round(rect.x() * dpr)),
+                    int(round(rect.y() * dpr)),
+                    int(round(rect.width() * dpr)),
+                    int(round(rect.height() * dpr))
                 )
                 cropped = self.screen_pixmap.copy(src_rect)
-                cropped.setDevicePixelRatio(1.0)
                 self.snipped.emit(cropped)
 
     def keyPressEvent(self, event):
@@ -121,14 +118,23 @@ class SnippingWidget(QWidget):
 
         painter = QPainter(self)
         
-        # 1. 极速 Blit 预渲染暗色底图（单指令内存直绘，无实时透明度混合消耗）
-        painter.drawPixmap(0, 0, self.dimmed_pixmap)
+        # 1. 将预先生成的暗色底图快速铺满当前逻辑全屏
+        painter.drawPixmap(self.rect(), self.dimmed_pixmap)
 
         if self.is_snipping:
             rect = self.get_selection_rect()
             if not rect.isEmpty() and rect.width() > 1 and rect.height() > 1:
-                # 2. 从原图中掏出选区以 1:1 物理高亮还原
-                painter.drawPixmap(rect, self.screen_pixmap, rect)
+                # 2. 精准高分屏物理坐标换算：
+                # 目标区域 rect 为逻辑坐标，源区域 src_rect 必须按 DPR 放大换算为物理底图坐标！
+                dpr = self.dpr or 1.0
+                src_rect = QRect(
+                    int(round(rect.x() * dpr)),
+                    int(round(rect.y() * dpr)),
+                    int(round(rect.width() * dpr)),
+                    int(round(rect.height() * dpr))
+                )
+                # 1:1 像素绝对对齐掏空高亮
+                painter.drawPixmap(rect, self.screen_pixmap, src_rect)
 
                 # 3. 选框高亮边框
                 pen = QPen(QColor(0, 229, 255), 2, Qt.PenStyle.SolidLine)
