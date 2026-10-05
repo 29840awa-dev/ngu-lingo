@@ -8,6 +8,7 @@ import io
 import os
 import re
 import random
+import time
 from PIL import Image
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QRect, QSize, QEvent, QObject
@@ -167,7 +168,15 @@ class GlobalHotkeyThread(QThread):
 
     def run(self):
         try:
+            last_time = 0
+
             def on_activate():
+                nonlocal last_time
+                now = time.time()
+                # 严格防抖：600ms 内不重复响应按键连击
+                if now - last_time < 0.6:
+                    return
+                last_time = now
                 self.hotkey_triggered.emit()
 
             with keyboard.GlobalHotKeys({'<alt>+q': on_activate}) as h:
@@ -278,7 +287,6 @@ class MainWindow(QMainWindow):
         self.btn_snip = QPushButton("✂️ 截屏 (Alt+Q)")
         self.btn_snip.setObjectName("btn_snip")
         self.btn_snip.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_snip.setShortcut("Alt+Q")
         self.btn_snip.clicked.connect(self.start_snip_capture)
         top_bar.addWidget(self.btn_snip, stretch=1)
 
@@ -739,6 +747,16 @@ class MainWindow(QMainWindow):
 
     # ================= 业务逻辑：截图与OCR =================
     def start_snip_capture(self):
+        # 1. 状态防护：截图窗口如果已经显示或正在拖拽截图中，直接忽略重复触发
+        if self.snipper.isVisible() or getattr(self.snipper, 'is_snipping', False):
+            return
+
+        # 2. 时间戳防抖保护 (600ms 内不重复启动)
+        now = time.time()
+        if hasattr(self, '_last_snip_time') and now - self._last_snip_time < 0.6:
+            return
+        self._last_snip_time = now
+
         self.status_label.setText("正在框选游戏区域... (按住鼠标左键拖拽，Esc退出)")
         self.snipper.start_snip()
 
