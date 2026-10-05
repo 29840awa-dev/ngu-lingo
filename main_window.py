@@ -162,29 +162,6 @@ class FlowLayout(QLayout):
         return y + lineHeight - rect.y()
 
 
-# 全局快捷键监听线程 (在任何窗口/全屏游戏下按 Alt+Q 均可触发)
-class GlobalHotkeyThread(QThread):
-    hotkey_triggered = pyqtSignal()
-
-    def run(self):
-        try:
-            last_time = 0
-
-            def on_activate():
-                nonlocal last_time
-                now = time.time()
-                # 严格防抖：600ms 内不重复响应按键连击
-                if now - last_time < 0.6:
-                    return
-                last_time = now
-                self.hotkey_triggered.emit()
-
-            with keyboard.GlobalHotKeys({'<alt>+q': on_activate}) as h:
-                h.join()
-        except Exception:
-            pass
-
-
 # 后台 OCR 与翻译线程 (零拷贝内存直通与多线程并发解析)
 class ProcessWorker(QThread):
     # full_text, translation, ngu_matches, words_detail, phrases_detail
@@ -267,11 +244,6 @@ class MainWindow(QMainWindow):
 
         self.init_ui()
         self.apply_dark_theme()
-
-        # 全局快捷键监听 (在任何游戏或第三方窗口激活时，按 Alt+Q 均可直接唤醒截屏)
-        self.hotkey_thread = GlobalHotkeyThread(self)
-        self.hotkey_thread.hotkey_triggered.connect(self.start_snip_capture)
-        self.hotkey_thread.start()
 
     def init_ui(self):
         main_widget = QWidget()
@@ -1536,11 +1508,3 @@ class MainWindow(QMainWindow):
                 height: 0px;
             }
         """)
-
-    def closeEvent(self, event):
-        try:
-            if hasattr(self, 'hotkey_thread') and self.hotkey_thread.isRunning():
-                self.hotkey_thread.terminate()
-        except Exception:
-            pass
-        super().closeEvent(event)
