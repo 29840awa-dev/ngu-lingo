@@ -30,6 +30,29 @@ from phrase_matcher import PhraseMatcher
 from ngu_knowledge import NGU_GLOSSARY, detect_ngu_terms, is_settings_menu_text, NGU_SETTINGS_GUIDE
 import database
 
+def highlight_target_word(sentence: str, target: str) -> str:
+    """
+    智能高亮例句中的目标单词/短语或其衍生词形（采用醒目的金色微徽章高亮样式）
+    """
+    if not sentence or not target:
+        return sentence or ""
+    # 醒目的金色渐变微徽章样式
+    highlight_tag = r'<span style="color: #ffd54f; background-color: #422a10; font-weight: bold; padding: 1px 5px; border-radius: 3px; border: 1px solid #ffb300;">\1</span>'
+    
+    # 1. 优先完整全词匹配（不区分大小写）
+    pattern = rf"\b({re.escape(target)})\b"
+    if re.search(pattern, sentence, re.IGNORECASE):
+        return re.sub(pattern, highlight_tag, sentence, flags=re.IGNORECASE)
+    
+    # 2. 词干及衍生形式匹配 (如 train -> Training / Trained, lock -> Unlocked)
+    if len(target) >= 4:
+        stem_pattern = rf"\b([a-zA-Z]*{re.escape(target)}[a-zA-Z]*)\b"
+        if re.search(stem_pattern, sentence, re.IGNORECASE):
+            return re.sub(stem_pattern, highlight_tag, sentence, flags=re.IGNORECASE)
+            
+    # 3. 兜底子串高亮
+    return re.sub(rf"({re.escape(target)})", highlight_tag, sentence, flags=re.IGNORECASE)
+
 # 智能双模滚动区组件：
 # 1. 当内部没有滚动条（内容未超出）时，鼠标在此区域滚动直接驱动最外层主页面滚动！
 # 2. 当内部出现滚动条（内容超出）时，在此区域滚动只驱动内部滚动条，并防止外层大页面联动跳动！
@@ -477,6 +500,13 @@ class MainWindow(QMainWindow):
         self.lbl_aw_lore.hide()
         aw_layout.addWidget(self.lbl_aw_lore)
 
+        self.lbl_aw_context = QLabel("")
+        self.lbl_aw_context.setStyleSheet("color: #90caf9; font-size: 11px; background: #1a2733; padding: 6px; border-radius: 4px; line-height: 1.4;")
+        self.lbl_aw_context.setWordWrap(True)
+        self.lbl_aw_context.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.lbl_aw_context.hide()
+        aw_layout.addWidget(self.lbl_aw_context)
+
         layout.addWidget(self.active_word_frame)
 
         # NGU 梗与机制解析横幅 (动态隐藏/展示)
@@ -900,6 +930,13 @@ class MainWindow(QMainWindow):
         else:
             self.lbl_aw_lore.hide()
 
+        if self.current_sentence:
+            hl_ctx = highlight_target_word(self.current_sentence, phrase_item["phrase"])
+            self.lbl_aw_context.setText(f"📖 <b>短语语境:</b> {hl_ctx}")
+            self.lbl_aw_context.show()
+        else:
+            self.lbl_aw_context.hide()
+
         if play_sound:
             self.tts.say(phrase_item["phrase"])
 
@@ -954,6 +991,13 @@ class MainWindow(QMainWindow):
             self.lbl_aw_lore.show()
         else:
             self.lbl_aw_lore.hide()
+
+        if self.current_sentence:
+            hl_ctx = highlight_target_word(self.current_sentence, detail["word"])
+            self.lbl_aw_context.setText(f"📖 <b>例句语境:</b> {hl_ctx}")
+            self.lbl_aw_context.show()
+        else:
+            self.lbl_aw_context.hide()
 
         if play_sound:
             self.tts.say(detail["word"])
@@ -1204,9 +1248,11 @@ class MainWindow(QMainWindow):
             cl.addWidget(trans)
 
             if c['context_sentence']:
-                ctx = QLabel(f"<b>游戏中例句:</b> {c['context_sentence']}")
-                ctx.setStyleSheet("color: #90caf9; font-size: 11px;")
+                hl_sentence = highlight_target_word(c['context_sentence'], c['word'])
+                ctx = QLabel(f"<b>游戏中例句:</b> {hl_sentence}")
+                ctx.setStyleSheet("color: #90caf9; font-size: 11px; line-height: 1.4;")
                 ctx.setWordWrap(True)
+                ctx.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 cl.addWidget(ctx)
 
             if c['lore_explanation']:
@@ -1265,9 +1311,12 @@ class MainWindow(QMainWindow):
         self.current_quiz_card = random.choice(cards)
         self.lbl_quiz_word.setText(self.current_quiz_card['word'])
         if self.current_quiz_card['context_sentence']:
-            masked_sentence = self.current_quiz_card['context_sentence'].replace(
-                self.current_quiz_card['word'], "_____"
-            )
+            w = self.current_quiz_card['word']
+            pat = rf"\b({re.escape(w)})\b"
+            if re.search(pat, self.current_quiz_card['context_sentence'], re.IGNORECASE):
+                masked_sentence = re.sub(pat, "_______", self.current_quiz_card['context_sentence'], flags=re.IGNORECASE)
+            else:
+                masked_sentence = self.current_quiz_card['context_sentence'].replace(w, "_______")
             self.lbl_quiz_context.setText(f"语境填空:\n\"{masked_sentence}\"")
         else:
             self.lbl_quiz_context.setText("")
@@ -1283,6 +1332,9 @@ class MainWindow(QMainWindow):
         ans_text = f"【释义】 {self.current_quiz_card['translation']}"
         if self.current_quiz_card['lore_explanation']:
             ans_text += f"\n【机制/梗】 {self.current_quiz_card['lore_explanation']}"
+        if self.current_quiz_card['context_sentence']:
+            hl_sent = highlight_target_word(self.current_quiz_card['context_sentence'], self.current_quiz_card['word'])
+            ans_text += f"<br><br><b>【原句回顾】</b> {hl_sent}"
         self.lbl_quiz_answer.setText(ans_text)
         self.lbl_quiz_answer.show()
         self.btn_mastered.setEnabled(True)
