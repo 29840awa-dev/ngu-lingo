@@ -8,6 +8,29 @@ from datetime import datetime
 
 DB_FILE = os.path.join(os.path.dirname(__file__), "ngu_vocab.db")
 
+def normalize_text_key(text: str) -> str:
+    """归一化英文文本以支持 OCR 容错（剔除 Unity 标签、格式化空白和标点）"""
+    if not text:
+        return ""
+    import re
+    # 移除 Unity 标签如 <b>, <color=green>, </b> 等
+    clean = re.sub(r'<[^>]+>', '', text)
+    # 统一各种单双引号和破折号
+    clean = clean.replace("’", "'").replace("“", '"').replace("”", '"').replace("`", "'")
+    # 保留纯字母数字并转小写
+    return re.sub(r'[^a-zA-Z0-9]+', '', clean).lower()
+
+def clean_unity_tags(text: str) -> str:
+    """清除汉化文本中的 Unity 标记代码，呈现干净利落的中文字符"""
+    if not text:
+        return ""
+    import re
+    # 清除富文本标签
+    clean = re.sub(r'<[^>]+>', '', text)
+    # 还原转义换行符
+    clean = clean.replace(r'\n', '\n')
+    return clean.strip()
+
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -41,11 +64,38 @@ def init_db():
             zh_trans TEXT
         );
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS game_translations (
+            en_text TEXT PRIMARY KEY,
+            cn_text TEXT,
+            norm_en TEXT
+        );
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_game_trans_norm ON game_translations (norm_en);")
+
     # 自动清理历史遗留被截断带有省略号的残缺释义
     cursor.execute("DELETE FROM dict_cache WHERE translation LIKE '%...' OR translation LIKE '%…'")
     # 自动清理历史遗留的 API 报错信息
     cursor.execute("DELETE FROM sentence_cache WHERE zh_trans LIKE '%LIMIT%' OR zh_trans LIKE '%MYMEMORY%' OR zh_trans LIKE '%EXCEEDED%'")
     conn.commit()
+
+    # 检查并自动载入 NGU 官方汉化补丁语料包 (3,989 条地道文本)
+    cursor.execute("SELECT COUNT(*) FROM game_translations")
+    gt_count = cursor.fetchone()[0]
+    json_path = os.path.join(os.path.dirname(__file__), "game_translations.json")
+    if gt_count < 3000 and os.path.exists(json_path):
+        try:
+            import json
+            with open(json_path, "r", encoding="utf-8") as f:
+                pairs = json.load(f)
+            items = [(en, cn, normalize_text_key(en)) for en, cn in pairs.items() if en and cn]
+            cursor.executemany("""
+                INSERT OR REPLACE INTO game_translations (en_text, cn_text, norm_en)
+                VALUES (?, ?, ?)
+            """, items)
+            conn.commit()
+        except Exception:
+            pass
 
     # 如果是首次启动且生词本为空，插入几个经典的 NGU 示范词卡
     cursor.execute("SELECT COUNT(*) FROM vocab_cards")
@@ -186,6 +236,92 @@ def set_cached_sentence(text: str, trans: str):
     """, (h, text.strip(), trans.strip()))
     conn.commit()
     conn.close()
+
+def get_game_translation(en_text: str):
+    """
+    从 NGU 官方原生汉化语料库中检索整句翻译（0ms 本地秒出）：
+    1. 精确原样匹配
+    2. 归一化匹配（消除大小写、OCR换行与空格差异、Unity富文本标签）
+    3. 常见标点/尾部字符容错
+    """
+    if not en_text or not en_text.strip():
+        return None
+    clean = en_text.strip()
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    try:
+        # 1. 优先查原样精准匹配
+        cursor.execute("SELECT cn_text FROM game_translations WHERE en_text = ?", (clean,))
+        row = cursor.fetchone()
+        if row and row[0]:
+            return clean_unity_tags(row[0])
+
+        # 2. 查归一化匹配 (大小写、空格、Unity标签容错)
+        norm = normalize_text_key(clean)
+        if norm:
+            cursor.execute("SELECT cn_text FROM game_translations WHERE norm_en = ? LIMIT 1", (norm,))
+            row = cursor.fetchone()
+            if row and row[0]:
+                return clean_unity_tags(row[0])
+
+            # 3. 容错尾部标点符号或轻微截断差异
+            if len(norm) >= 12:
+                prefix = norm[:min(len(norm), 35)]
+                cursor.execute("SELECT cn_text, norm_en FROM game_translations WHERE norm_en LIKE ? LIMIT 1", (f"{prefix}%",))
+                row = cursor.fetchone()
+                if row and row[0]:
+                    # 避免长短悬殊误判
+                    db_norm = row[1] or ""
+                    if abs(len(db_norm) - len(norm)) <= max(8, int(len(norm) * 0.2)):
+                        return clean_unity_tags(row[0])
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    return None
+
+def get_game_term_note(term: str):
+    """
+    查询单个单词或短语在游戏中是否有官方汉化专有名词对应
+    若有且长度适合，返回其中文汉化译名（供词卡 Lore 字段丰富展示，绝不破坏词典基本释义）
+    """
+    if not term or not term.strip():
+        return None
+    clean = term.strip()
+    norm = normalize_text_key(clean)
+    if not norm or len(norm) < 2:
+        return None
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT cn_text FROM game_translations WHERE norm_en = ? LIMIT 1", (norm,))
+        row = cursor.fetchone()
+        if row and row[0]:
+            clean_cn = clean_unity_tags(row[0])
+            # 专有名词/短语翻译通常较简短（<= 30字符）且不与原文完全雷同
+            if 0 < len(clean_cn) <= 30 and clean_cn.lower() != clean.lower():
+                return clean_cn
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    return None
+
+def reindex_game_translations():
+    """重新全量同步并归一化索引 game_translations 表"""
+    json_path = os.path.join(os.path.dirname(__file__), "game_translations.json")
+    if not os.path.exists(json_path):
+        return 0
+    import json
+    with open(json_path, "r", encoding="utf-8") as f:
+        pairs = json.load(f)
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    items = [(en, cn, normalize_text_key(en)) for en, cn in pairs.items() if en and cn]
+    cursor.executemany("INSERT OR REPLACE INTO game_translations (en_text, cn_text, norm_en) VALUES (?, ?, ?)", items)
+    conn.commit()
+    conn.close()
+    return len(items)
 
 # 初始化数据库
 init_db()

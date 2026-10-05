@@ -112,7 +112,16 @@ class TranslationService:
         if is_settings_menu_text(clean_text):
             return get_settings_guide_markdown()
 
-        # 2. 优先查本地 SQLite 句子永久缓存
+        # 2. 核心优化：优先匹配 NGU 官方汉化补丁原生语料包 (0ms 本地秒出，100%纯正地道)
+        try:
+            game_trans = database.get_game_translation(clean_text)
+            if game_trans:
+                database.set_cached_sentence(clean_text, game_trans)
+                return game_trans
+        except Exception:
+            pass
+
+        # 3. 优先查本地 SQLite 句子永久缓存
         try:
             cached = database.get_cached_sentence(clean_text)
             if cached:
@@ -290,57 +299,68 @@ class TranslationService:
         # 1. NGU 专属知识库
         if low in NGU_GLOSSARY:
             item = NGU_GLOSSARY[low]
-            return {
+            res = {
                 "word": item["word"],
                 "phonetic": item.get("phonetic", ""),
                 "cn": item["cn"],
                 "lore": item.get("lore", ""),
                 "type": item.get("type", "NGU机制")
             }
-
         # 2. 本地 SQLite 缓存
-        cached = database.get_cached_word(low)
-        if cached:
-            return {
+        elif database.get_cached_word(low):
+            cached = database.get_cached_word(low)
+            res = {
                 "word": clean_word,
                 "phonetic": cached.get("phonetic", ""),
                 "cn": cached["translation"],
                 "lore": "",
                 "type": cached.get("tag", "词汇")
             }
-
         # 3. 通用词汇表
-        if low in COMMON_DICT:
+        elif low in COMMON_DICT:
             cn_val = COMMON_DICT[low]
             database.set_cached_word(low, "", cn_val, "常用词汇")
-            return {
+            res = {
                 "word": clean_word,
                 "phonetic": "",
                 "cn": cn_val,
                 "lore": "",
                 "type": "常用词汇"
             }
-
         # 4. 在线实时查询
-        online_phone, online_explain = self.fetch_word_online(clean_word)
-        if online_explain:
-            database.set_cached_word(low, online_phone, online_explain, "英文词汇")
-            return {
-                "word": clean_word,
-                "phonetic": online_phone,
-                "cn": online_explain,
-                "lore": "",
-                "type": "英文词汇"
-            }
+        else:
+            online_phone, online_explain = self.fetch_word_online(clean_word)
+            if online_explain:
+                database.set_cached_word(low, online_phone, online_explain, "英文词汇")
+                res = {
+                    "word": clean_word,
+                    "phonetic": online_phone,
+                    "cn": online_explain,
+                    "lore": "",
+                    "type": "英文词汇"
+                }
+            else:
+                res = {
+                    "word": clean_word,
+                    "phonetic": "",
+                    "cn": "英文词汇 (点击【+】加入生词本记录)",
+                    "lore": "",
+                    "type": "词汇"
+                }
 
-        # 5. 兜底
-        return {
-            "word": clean_word,
-            "phonetic": "",
-            "cn": "英文词汇 (点击【+】加入生词本记录)",
-            "lore": "",
-            "type": "词汇"
-        }
+        # 补充：查询该词或专有名词是否有汉化补丁官方译名（完整保留标准英文词典与音标，在机制Lore注记）
+        try:
+            game_term = database.get_game_term_note(clean_word)
+            if game_term:
+                if res.get("lore"):
+                    if game_term not in res["lore"]:
+                        res["lore"] += f"\n🎮 官方汉化对照: 【{game_term}】"
+                else:
+                    res["lore"] = f"🎮 本作汉化译为: 【{game_term}】"
+        except Exception:
+            pass
+
+        return res
 
     def batch_get_word_details(self, words: list):
         """并发多线程快速提取单词释义，0.3 秒内全部返回"""
