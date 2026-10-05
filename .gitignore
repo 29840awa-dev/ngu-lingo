@@ -19,3 +19,6 @@ Thumbs.db
 
 # Log files
 *.log
+
+# Audio Cache (发音音频缓存)
+audio_cache/

@@ -34,6 +34,15 @@ def init_db():
             tag TEXT
         );
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sentence_cache (
+            hash TEXT PRIMARY KEY,
+            en_text TEXT,
+            zh_trans TEXT
+        );
+    """)
+    # 自动清理历史遗留被截断带有省略号的残缺释义
+    cursor.execute("DELETE FROM dict_cache WHERE translation LIKE '%...' OR translation LIKE '%…'")
     conn.commit()
 
     # 如果是首次启动且生词本为空，插入几个经典的 NGU 示范词卡
@@ -125,7 +134,11 @@ def get_cached_word(word: str):
     row = cursor.fetchone()
     conn.close()
     if row:
-        return {"word": row[0], "phonetic": row[1] or "", "translation": row[2], "tag": row[3] or "词汇"}
+        tr = row[2] or ""
+        # 如果缓存的历史释义被截断带有省略号，自动放弃并重新拉取完整释义
+        if tr.endswith("...") or tr.endswith("…"):
+            return None
+        return {"word": row[0], "phonetic": row[1] or "", "translation": tr, "tag": row[3] or "词汇"}
     return None
 
 def set_cached_word(word: str, phonetic: str, translation: str, tag: str = "词汇"):
@@ -135,6 +148,32 @@ def set_cached_word(word: str, phonetic: str, translation: str, tag: str = "词�
         INSERT OR REPLACE INTO dict_cache (word, phonetic, translation, tag)
         VALUES (?, ?, ?, ?)
     """, (word.strip(), phonetic, translation, tag))
+    conn.commit()
+    conn.close()
+
+def get_cached_sentence(text: str):
+    if not text or not text.strip():
+        return None
+    import hashlib
+    h = hashlib.md5(text.strip().lower().encode('utf-8')).hexdigest()
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT zh_trans FROM sentence_cache WHERE hash = ?", (h,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def set_cached_sentence(text: str, trans: str):
+    if not text or not text.strip() or not trans or not trans.strip():
+        return
+    import hashlib
+    h = hashlib.md5(text.strip().lower().encode('utf-8')).hexdigest()
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT OR REPLACE INTO sentence_cache (hash, en_text, zh_trans)
+        VALUES (?, ?, ?)
+    """, (h, text.strip(), trans.strip()))
     conn.commit()
     conn.close()
 

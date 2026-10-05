@@ -332,6 +332,14 @@ NGU_GLOSSARY = {
         "cn": "放置 / 挂机 / 空闲",
         "lore": "指无需持续操作，依靠后台自动化运转增长数值的游戏流派。",
         "type": "核心系统"
+    },
+    "fluff": {
+        "word": "Fluff",
+        "phonetic": "/flʌf/",
+        "pos": "n.",
+        "cn": "废话梗 / 搞笑剧情 / 弱鸡毛团",
+        "lore": "在 NGU 中，作者 4G 经常把纯搞笑无厘头的剧情调侃为「Fluff」（填充废话/闲聊梗）。这里也常用来戏谑主角虚弱得像个毛团。",
+        "type": "游戏梗与俚语"
     }
 }
 
@@ -348,8 +356,8 @@ def detect_ngu_terms(text: str):
     
     seen = set()
     for key in sorted_keys:
-        # 使用单词边界或子串匹配
-        if key in lower_text and key not in seen:
+        import re
+        if re.search(rf"\b{re.escape(key)}\b", lower_text) and key not in seen:
             matches.append(NGU_GLOSSARY[key])
             seen.add(key)
             

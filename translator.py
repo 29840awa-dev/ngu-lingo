@@ -91,31 +91,92 @@ COMMON_DICT = {
 
 class TranslationService:
     def __init__(self):
-        # 禁用系统代理干扰，保证直连国内词典服务超高速秒开
         self.session = requests.Session()
-        self.session.trust_env = False
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
 
     def translate_sentence(self, text: str) -> str:
-        """整句翻译：支持在线高质量长句翻译，带超时保护与离线兜底"""
-        text = text.strip()
-        if not text:
+        """
+        高精度整句翻译：
+        1. 优先查本地 SQLite 句子永久缓存 (sentence_cache)，0毫秒秒开
+        2. 多引擎极速并发竞速 (Google GTX / 网易有道移动端 / MyMemory / 有道开放接口)，首个返回者即采纳
+        3. 自动入库持久化，保障毫秒级响应与地道通顺中文
+        4. 离线友好兜底
+        """
+        clean_text = text.strip()
+        if not clean_text:
             return ""
 
-        # 1. 尝试有道在线翻译接口
+        # 1. 优先查本地 SQLite 句子永久缓存
         try:
-            url = 'https://aidemo.youdao.com/trans'
-            data = {'q': text, 'from': 'en', 'to': 'zh-CHS'}
-            r = self.session.post(url, data=data, timeout=2.5)
-            if r.status_code == 200:
-                res_json = r.json()
-                translations = res_json.get('translation', [])
-                if translations and translations[0]:
-                    return translations[0]
+            cached = database.get_cached_sentence(clean_text)
+            if cached:
+                return cached
         except Exception:
             pass
 
-        # 2. 离线词义兜底拼接
-        words = self.extract_words(text)
+        # 2. 多引擎并发极速竞速
+        import urllib.parse
+
+        def fetch_google():
+            url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-CN&dt=t&q={urllib.parse.quote(clean_text)}"
+            r = self.session.get(url, headers=self.headers, timeout=3.5)
+            if r.status_code == 200:
+                data = r.json()
+                if data and len(data) > 0 and data[0]:
+                    res = ''.join([item[0] for item in data[0] if item and item[0]])
+                    if res and res.strip().lower() != clean_text.lower():
+                        return res.strip()
+            raise RuntimeError("Google translate failed")
+
+        def fetch_youdao_m():
+            url = "https://m.youdao.com/translate"
+            r = self.session.post(url, data={'inputtext': clean_text, 'type': 'AUTO'}, headers=self.headers, timeout=3.5)
+            if r.status_code == 200:
+                m = re.search(r'translateResult[\s\S]*?<li>(.*?)</li>', r.text)
+                if m:
+                    res = m.group(1).strip()
+                    if res and res.lower() != clean_text.lower():
+                        return res
+            raise RuntimeError("Youdao mobile translate failed")
+
+        def fetch_mymemory():
+            url = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(clean_text)}&langpair=en|zh-CN"
+            r = self.session.get(url, headers=self.headers, timeout=3.5)
+            if r.status_code == 200:
+                res = r.json().get('responseData', {}).get('translatedText', '')
+                if res and not res.startswith("MYMEMORY") and res.strip().lower() != clean_text.lower():
+                    return res.strip()
+            raise RuntimeError("MyMemory translate failed")
+
+        def fetch_youdao_aidemo():
+            url = 'https://aidemo.youdao.com/trans'
+            r = self.session.post(url, data={'q': clean_text, 'from': 'en', 'to': 'zh-CHS'}, headers=self.headers, timeout=4.0)
+            if r.status_code == 200:
+                translations = r.json().get('translation', [])
+                if translations and translations[0] and translations[0].strip().lower() != clean_text.lower():
+                    return translations[0].strip()
+            raise RuntimeError("Youdao aidemo failed")
+
+        engines = [fetch_google, fetch_youdao_m, fetch_mymemory, fetch_youdao_aidemo]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(engines)) as executor:
+            futures = [executor.submit(fn) for fn in engines]
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    result = future.result()
+                    if result:
+                        # 自动存入本地 SQLite 缓存
+                        try:
+                            database.set_cached_sentence(clean_text, result)
+                        except Exception:
+                            pass
+                        return result
+                except Exception:
+                    continue
+
+        # 3. 若全部网络请求超时或处于断网环境，进行离线兜底提示
+        words = self.extract_words(clean_text)
         known = []
         for w in words:
             low = w.lower()
@@ -125,8 +186,8 @@ class TranslationService:
                 known.append(f"{w} [{COMMON_DICT[low]}]")
 
         if known:
-            return "【词义参考】 " + "，".join(known)
-        return "（未识别到联网释义，可直接在下方查看关键词拆解）"
+            return "（⚠️ 当前网络连接超时，未能获取连贯整句翻译。以下为单字离线参考）：\n" + "，".join(known)
+        return "（未识别到联网整句释义，请检查网络后点击【重新翻译】）"
 
     def extract_words(self, text: str):
         """从句子中提取纯英文单词列表"""
@@ -134,19 +195,66 @@ class TranslationService:
         return list(dict.fromkeys(words))
 
     def fetch_word_online(self, word: str):
-        """在线查询单词释义与音标"""
-        url = f"https://dict.youdao.com/suggest?num=1&doctype=json&q={word}"
+        """在线查询单词完整释义与精准音标（采用完整词典接口，彻底杜绝省略号截断）"""
+        url = f"https://dict.youdao.com/jsonapi?q={word}"
         try:
-            r = self.session.get(url, timeout=1.8)
+            r = self.session.get(url, headers=self.headers, timeout=2.5)
             if r.status_code == 200:
-                data = r.json().get('data', {})
-                entries = data.get('entries', [])
-                if entries:
-                    explain = entries[0].get('explain', '')
-                    return explain
+                data = r.json()
+                phonetic = ""
+                trs_list = []
+                
+                # 1. 尝试 ec (英汉词典)
+                ec = data.get('ec', {})
+                words = ec.get('word', [])
+                if words:
+                    w = words[0]
+                    p = w.get('usphone') or w.get('ukphone') or w.get('phone')
+                    if p:
+                        phonetic = f"/{p}/"
+                    for tr in w.get('trs', []):
+                        tran = tr.get('tr', [{}])[0].get('l', {}).get('i', [])
+                        if tran and tran[0]:
+                            trs_list.append(tran[0].strip())
+                            
+                # 2. 尝试 simple
+                if not trs_list:
+                    simple = data.get('simple', {})
+                    words_s = simple.get('word', [])
+                    if words_s:
+                        for item in words_s[0].get('trs', []):
+                            pos = item.get('pos', '').strip()
+                            tran = item.get('tran', '').strip()
+                            if tran:
+                                line = f"{pos} {tran}".strip() if pos else tran
+                                trs_list.append(line)
+                                
+                # 3. 尝试 fanyi 兜底
+                if not trs_list:
+                    fanyi = data.get('fanyi', {}).get('tran')
+                    if fanyi:
+                        trs_list.append(fanyi.strip())
+
+                if trs_list:
+                    explain = "\n".join(trs_list)
+                    return phonetic, explain
         except Exception:
             pass
-        return None
+
+        # 备选接口：suggest 兜底，但过滤掉残缺的尾部省略号
+        try:
+            url_s = f"https://dict.youdao.com/suggest?num=1&doctype=json&q={word}"
+            r_s = self.session.get(url_s, headers=self.headers, timeout=1.8)
+            if r_s.status_code == 200:
+                entries = r_s.json().get('data', {}).get('entries', [])
+                if entries:
+                    raw_exp = entries[0].get('explain', '')
+                    clean_exp = re.sub(r'\(?[A-Za-z\s]*\.\.\.$', '', raw_exp).rstrip(' ;；,，')
+                    return "", clean_exp
+        except Exception:
+            pass
+
+        return "", None
 
     def get_word_detail(self, word: str):
         """
@@ -194,12 +302,12 @@ class TranslationService:
             }
 
         # 4. 在线实时查询
-        online_explain = self.fetch_word_online(clean_word)
+        online_phone, online_explain = self.fetch_word_online(clean_word)
         if online_explain:
-            database.set_cached_word(low, "", online_explain, "英文词汇")
+            database.set_cached_word(low, online_phone, online_explain, "英文词汇")
             return {
                 "word": clean_word,
-                "phonetic": "",
+                "phonetic": online_phone,
                 "cn": online_explain,
                 "lore": "",
                 "type": "英文词汇"

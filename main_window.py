@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem, QFrame, QScrollArea, QMessageBox, QCheckBox,
     QFileDialog, QSplitter, QLayout, QSizePolicy
 )
-from PyQt6.QtTextToSpeech import QTextToSpeech
+from audio_service import AudioService
 
 from snipper import SnippingWidget
 from ocr_engine import OCREngine, fix_jammed_words
@@ -27,7 +27,9 @@ from phrase_matcher import PhraseMatcher
 from ngu_knowledge import NGU_GLOSSARY, detect_ngu_terms
 import database
 
-# 独立滚轮滚动区组件：无论内层滚动条是否滑到底/滑到顶，彻底拦截滚轮事件，防止外层大页面滑动穿透
+# 智能双模滚动区组件：
+# 1. 当内部没有滚动条（内容未超出）时，鼠标在此区域滚动直接驱动最外层主页面滚动！
+# 2. 当内部出现滚动条（内容超出）时，在此区域滚动只驱动内部滚动条，并防止外层大页面联动跳动！
 class IsolatedScrollArea(QScrollArea):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -35,13 +37,29 @@ class IsolatedScrollArea(QScrollArea):
 
     def eventFilter(self, obj, event):
         if obj == self.viewport() and event.type() == QEvent.Type.Wheel:
-            delta = event.angleDelta().y()
             sb = self.verticalScrollBar()
-            if sb and delta != 0:
-                step = (delta // 15) * 22
-                sb.setValue(sb.value() - step)
-            event.accept()
-            return True
+            if sb and sb.maximum() > 0:
+                # 内部有滚动条：内部独立滚动，防止穿透
+                delta = event.angleDelta().y()
+                if delta != 0:
+                    step = (delta // 15) * 22
+                    sb.setValue(sb.value() - step)
+                event.accept()
+                return True
+            else:
+                # 内部没有滚动条：直接将滚轮事件传递给最外侧滚动条！
+                p = self.parent()
+                while p:
+                    if isinstance(p, QScrollArea):
+                        outer_sb = p.verticalScrollBar()
+                        if outer_sb and outer_sb.maximum() > 0:
+                            delta = event.angleDelta().y()
+                            step = (delta // 15) * 25
+                            outer_sb.setValue(outer_sb.value() - step)
+                            event.accept()
+                            return True
+                    p = p.parent()
+                return False
         return super().eventFilter(obj, event)
 
 class IsolatedWheelFilter(QObject):
@@ -51,13 +69,28 @@ class IsolatedWheelFilter(QObject):
 
     def eventFilter(self, obj, event):
         if event.type() == QEvent.Type.Wheel:
-            delta = event.angleDelta().y()
             sb = self.target.verticalScrollBar()
-            if sb and delta != 0:
-                step = (delta // 15) * 20
-                sb.setValue(sb.value() - step)
-            event.accept()
-            return True
+            if sb and sb.maximum() > 0:
+                delta = event.angleDelta().y()
+                if delta != 0:
+                    step = (delta // 15) * 20
+                    sb.setValue(sb.value() - step)
+                event.accept()
+                return True
+            else:
+                # 无内层滚动条时，转发给外层主滚动条
+                p = self.target.parent()
+                while p:
+                    if isinstance(p, QScrollArea):
+                        outer_sb = p.verticalScrollBar()
+                        if outer_sb and outer_sb.maximum() > 0:
+                            delta = event.angleDelta().y()
+                            step = (delta // 15) * 25
+                            outer_sb.setValue(outer_sb.value() - step)
+                            event.accept()
+                            return True
+                    p = p.parent()
+                return False
         return super().eventFilter(obj, event)
 
 # 自动折行的流式布局组件 (FlowLayout)
@@ -168,14 +201,14 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("NGU Lingo Companion - 放置游戏英语伴侣")
-        self.resize(680, 920)
-        self.setMinimumSize(540, 740)
+        self.setMinimumSize(390, 480)
+        self.resize(440, 520)
         
         # 初始化服务
         self.ocr_engine = OCREngine()
         self.trans_service = TranslationService()
         self.phrase_matcher = PhraseMatcher()
-        self.tts = QTextToSpeech()
+        self.tts = AudioService(self)
         
         # 截图浮层
         self.snipper = SnippingWidget()
@@ -197,24 +230,26 @@ class MainWindow(QMainWindow):
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         main_layout = QVBoxLayout(main_widget)
-        main_layout.setContentsMargins(12, 12, 12, 12)
-        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(8, 8, 8, 8)
+        main_layout.setSpacing(8)
 
-        # 1. 顶部操作栏
+        # 1. 顶部操作栏 (精简短语，杜绝截断挤压)
         top_bar = QHBoxLayout()
+        top_bar.setSpacing(6)
         
-        self.btn_snip = QPushButton("📸 框选游戏取词 (Alt+Q)")
+        self.btn_snip = QPushButton("✂️ 截屏 (Alt+Q)")
         self.btn_snip.setObjectName("btn_snip")
         self.btn_snip.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_snip.clicked.connect(self.start_snip_capture)
-        top_bar.addWidget(self.btn_snip, stretch=2)
+        top_bar.addWidget(self.btn_snip, stretch=1)
 
-        self.btn_speak = QPushButton("🔊 全句朗读")
+        self.btn_speak = QPushButton("🔊 朗读")
+        self.btn_speak.setObjectName("btn_top_speak")
         self.btn_speak.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_speak.clicked.connect(self.speak_current_text)
         top_bar.addWidget(self.btn_speak)
 
-        self.cb_top = QCheckBox("📌 窗口置顶")
+        self.cb_top = QCheckBox("📌 置顶")
         self.cb_top.setChecked(True)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         self.cb_top.stateChanged.connect(self.toggle_always_on_top)
@@ -222,29 +257,29 @@ class MainWindow(QMainWindow):
 
         main_layout.addLayout(top_bar)
 
-        # 2. 核心分页标签
+        # 2. 核心分页标签 (短名称，全显无箭头)
         self.tabs = QTabWidget()
         self.tabs.setObjectName("main_tabs")
 
-        # Tab 1: 实时解析
+        # Tab 1: 查词
         self.tab_inspector = QWidget()
         self.init_inspector_tab()
-        self.tabs.addTab(self.tab_inspector, "🔍 实时解析")
+        self.tabs.addTab(self.tab_inspector, "🔍 查词")
 
         # Tab 2: 生词本
         self.tab_notebook = QWidget()
         self.init_notebook_tab()
-        self.tabs.addTab(self.tab_notebook, "📚 挂机生词本")
+        self.tabs.addTab(self.tab_notebook, "📚 生词本")
 
-        # Tab 3: 挂机微测验
+        # Tab 3: 测验
         self.tab_quiz = QWidget()
         self.init_quiz_tab()
-        self.tabs.addTab(self.tab_quiz, "⚡ 挂机微测验")
+        self.tabs.addTab(self.tab_quiz, "⚡ 测验")
 
-        # Tab 4: NGU 百科
+        # Tab 4: 百科
         self.tab_glossary = QWidget()
         self.init_glossary_tab()
-        self.tabs.addTab(self.tab_glossary, "📖 NGU 百科")
+        self.tabs.addTab(self.tab_glossary, "📖 百科")
 
         main_layout.addWidget(self.tabs)
 
@@ -276,30 +311,36 @@ class MainWindow(QMainWindow):
         layout.setSpacing(9)
 
         # 原文输入/展示区
-        lbl_orig = QLabel("英文原文 (可编辑重查):")
-        lbl_orig.setStyleSheet("font-weight: bold; color: #4fc3f7; font-size: 13px;")
-        layout.addWidget(lbl_orig)
+        orig_header = QHBoxLayout()
+        orig_header.setContentsMargins(0, 0, 0, 0)
+        lbl_orig = QLabel("英文原文:")
+        lbl_orig.setStyleSheet("font-weight: bold; color: #4fc3f7; font-size: 12px;")
+        orig_header.addWidget(lbl_orig)
+        orig_header.addStretch()
 
-        text_row = QHBoxLayout()
+        self.btn_retranslate = QPushButton("🔄 重新翻译")
+        self.btn_retranslate.setObjectName("btn_retranslate_inline")
+        self.btn_retranslate.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_retranslate.clicked.connect(self.manual_retranslate)
+        orig_header.addWidget(self.btn_retranslate)
+        layout.addLayout(orig_header)
+
         self.text_en = QTextEdit()
         self.text_en.setPlaceholderText("框选截取到的英文会在此显示，也可以直接粘贴...")
-        self.text_en.setFixedHeight(115)
-        text_row.addWidget(self.text_en)
-
-        self.btn_retranslate = QPushButton("重新\n翻译")
-        self.btn_retranslate.setFixedWidth(64)
-        self.btn_retranslate.setFixedHeight(115)
-        self.btn_retranslate.clicked.connect(self.manual_retranslate)
-        text_row.addWidget(self.btn_retranslate)
-        layout.addLayout(text_row)
+        self.text_en.setFixedHeight(90)
+        self.text_en.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self.text_en.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        layout.addWidget(self.text_en)
 
         lbl_zh = QLabel("整句释义:")
-        lbl_zh.setStyleSheet("font-weight: bold; color: #81c784; font-size: 13px;")
+        lbl_zh.setStyleSheet("font-weight: bold; color: #81c784; font-size: 12px;")
         layout.addWidget(lbl_zh)
 
         self.text_zh = QTextEdit()
         self.text_zh.setReadOnly(True)
-        self.text_zh.setFixedHeight(85)
+        self.text_zh.setFixedHeight(75)
+        self.text_zh.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self.text_zh.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         layout.addWidget(self.text_zh)
 
         # 核心功能 1：按词点读气泡块 (Word Chips)
@@ -311,6 +352,7 @@ class MainWindow(QMainWindow):
         self.chips_scroll = IsolatedScrollArea()
         self.chips_scroll.setWidgetResizable(True)
         self.chips_scroll.setObjectName("chips_scroll")
+        self.chips_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.chips_scroll.setMinimumHeight(150)
         self.chips_scroll.setMaximumHeight(280)
         self.chips_container = QWidget()
@@ -346,36 +388,52 @@ class MainWindow(QMainWindow):
         self.active_word_frame = QFrame()
         self.active_word_frame.setObjectName("active_word_frame")
         aw_layout = QVBoxLayout(self.active_word_frame)
-        aw_layout.setContentsMargins(12, 10, 12, 10)
+        aw_layout.setContentsMargins(10, 8, 10, 8)
         aw_layout.setSpacing(6)
 
         aw_header = QHBoxLayout()
-        self.lbl_aw_word = QLabel("点击上方单词或短语查看详细释义")
-        self.lbl_aw_word.setStyleSheet("font-size: 17px; font-weight: bold; color: #00e5ff;")
-        aw_header.addWidget(self.lbl_aw_word)
+        aw_header.setSpacing(6)
+        
+        left_box = QHBoxLayout()
+        left_box.setSpacing(6)
+        self.lbl_aw_word = QLabel("📌 查词详情")
+        self.lbl_aw_word.setStyleSheet("font-size: 15px; font-weight: bold; color: #00e5ff;")
+        left_box.addWidget(self.lbl_aw_word)
+
+        self.lbl_aw_phonetic = QLabel("")
+        self.lbl_aw_phonetic.setStyleSheet("color: #90a4ae; font-size: 11px;")
+        self.lbl_aw_phonetic.hide()
+        left_box.addWidget(self.lbl_aw_phonetic)
 
         self.lbl_aw_tag = QLabel("")
-        self.lbl_aw_tag.setStyleSheet("background: #37474f; color: #80deea; padding: 2px 7px; border-radius: 3px; font-size: 11px;")
+        self.lbl_aw_tag.setStyleSheet("background: #37474f; color: #80deea; padding: 1px 6px; border-radius: 3px; font-size: 10px;")
         self.lbl_aw_tag.hide()
-        aw_header.addWidget(self.lbl_aw_tag)
-        aw_header.addStretch()
+        left_box.addWidget(self.lbl_aw_tag)
+        left_box.addStretch()
+        aw_header.addLayout(left_box, stretch=1)
 
+        right_btns = QHBoxLayout()
+        right_btns.setSpacing(5)
         self.btn_aw_speak = QPushButton("🔊 朗读")
         self.btn_aw_speak.setProperty("class", "card_action_btn")
         self.btn_aw_speak.clicked.connect(self.speak_active_word)
-        aw_header.addWidget(self.btn_aw_speak)
+        self.btn_aw_speak.hide()
+        right_btns.addWidget(self.btn_aw_speak)
 
         self.btn_aw_add = QPushButton("➕ 收藏")
         self.btn_aw_add.setProperty("class", "card_action_btn")
         self.btn_aw_add.setStyleSheet("background-color: #00695c; border-color: #00897b;")
         self.btn_aw_add.clicked.connect(self.add_active_word_to_db)
-        aw_header.addWidget(self.btn_aw_add)
+        self.btn_aw_add.hide()
+        right_btns.addWidget(self.btn_aw_add)
+        aw_header.addLayout(right_btns)
 
         aw_layout.addLayout(aw_header)
 
         self.lbl_aw_meaning = QLabel("在上方点击任意单词或短语块，这里会立刻展示词性、发音与地道释义。")
-        self.lbl_aw_meaning.setStyleSheet("color: #e0e0e0; font-size: 13px; line-height: 1.4;")
+        self.lbl_aw_meaning.setStyleSheet("color: #e0e0e0; font-size: 12px; line-height: 1.4;")
         self.lbl_aw_meaning.setWordWrap(True)
+        self.lbl_aw_meaning.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         aw_layout.addWidget(self.lbl_aw_meaning)
 
         # 短语关联推荐行
@@ -447,9 +505,18 @@ class MainWindow(QMainWindow):
         search_bar.addWidget(self.btn_export)
         layout.addLayout(search_bar)
 
-        self.list_cards = QListWidget()
-        self.list_cards.setObjectName("list_cards")
-        layout.addWidget(self.list_cards)
+        self.notebook_scroll = QScrollArea()
+        self.notebook_scroll.setWidgetResizable(True)
+        self.notebook_scroll.setObjectName("notebook_scroll")
+        self.notebook_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.notebook_container = QWidget()
+        self.notebook_container.setObjectName("notebook_container")
+        self.notebook_layout = QVBoxLayout(self.notebook_container)
+        self.notebook_layout.setContentsMargins(4, 4, 4, 4)
+        self.notebook_layout.setSpacing(8)
+        self.notebook_layout.addStretch()
+        self.notebook_scroll.setWidget(self.notebook_container)
+        layout.addWidget(self.notebook_scroll)
 
     # ================= Tab 3: 挂机微测验 =================
     def init_quiz_tab(self):
@@ -520,33 +587,55 @@ class MainWindow(QMainWindow):
         search.setPlaceholderText("🔍 搜索 NGU 术语与短语 (如 cap, power, rebirth, drop chance)...")
         layout.addWidget(search)
 
-        list_glossary = QListWidget()
-        list_glossary.setObjectName("list_glossary")
-        layout.addWidget(list_glossary)
+        glossary_scroll = QScrollArea()
+        glossary_scroll.setWidgetResizable(True)
+        glossary_scroll.setObjectName("glossary_scroll")
+        glossary_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        glossary_container = QWidget()
+        glossary_container.setObjectName("glossary_container")
+        glossary_layout = QVBoxLayout(glossary_container)
+        glossary_layout.setContentsMargins(4, 4, 4, 4)
+        glossary_layout.setSpacing(6)
+        glossary_layout.addStretch()
+        glossary_scroll.setWidget(glossary_container)
+        layout.addWidget(glossary_scroll)
 
         def populate(kw=""):
-            list_glossary.clear()
+            while glossary_layout.count() > 1:
+                child = glossary_layout.takeAt(0)
+                if child.widget():
+                    child.widget().deleteLater()
+
             kw_low = kw.lower().strip()
+            insert_idx = 0
             for key, val in NGU_GLOSSARY.items():
                 if not kw_low or kw_low in key or kw_low in val['cn'].lower() or kw_low in val['lore'].lower():
-                    item = QListWidgetItem()
-                    card = QWidget()
+                    card = QFrame()
+                    card.setObjectName("glossary_card")
+                    card.setStyleSheet("""
+                        #glossary_card {
+                            background-color: #1a1c26;
+                            border: 1px solid #333649;
+                            border-radius: 6px;
+                        }
+                    """)
                     cl = QVBoxLayout(card)
-                    cl.setContentsMargins(8, 6, 8, 6)
+                    cl.setContentsMargins(8, 7, 8, 7)
                     cl.setSpacing(3)
                     
                     header = QHBoxLayout()
                     t = QLabel(f"<b>{val['word']}</b> <font color='#888'>{val.get('phonetic', '')}</font>")
-                    t.setStyleSheet("font-size: 14px; color: #4fc3f7;")
+                    t.setStyleSheet("font-size: 13px; color: #4fc3f7;")
+                    t.setWordWrap(True)
                     tag = QLabel(val.get('type', '机制'))
-                    tag.setStyleSheet("background: #37474f; color: #80deea; padding: 2px 6px; border-radius: 3px; font-size: 11px;")
-                    header.addWidget(t)
-                    header.addStretch()
+                    tag.setStyleSheet("background: #37474f; color: #80deea; padding: 1px 5px; border-radius: 3px; font-size: 10px;")
+                    header.addWidget(t, stretch=1)
                     header.addWidget(tag)
                     cl.addLayout(header)
 
                     cn = QLabel(f"<b>释义:</b> {val['cn']}")
                     cn.setStyleSheet("color: #e0e0e0; font-size: 12px;")
+                    cn.setWordWrap(True)
                     cl.addWidget(cn)
 
                     lore = QLabel(f"<b>机制与梗:</b> {val['lore']}")
@@ -554,9 +643,8 @@ class MainWindow(QMainWindow):
                     lore.setWordWrap(True)
                     cl.addWidget(lore)
 
-                    item.setSizeHint(card.sizeHint())
-                    list_glossary.addItem(item)
-                    list_glossary.setItemWidget(item, card)
+                    glossary_layout.insertWidget(insert_idx, card)
+                    insert_idx += 1
 
         search.textChanged.connect(populate)
         populate()
@@ -704,6 +792,8 @@ class MainWindow(QMainWindow):
         self.lbl_aw_word.setText(phrase_item["phrase"])
         self.lbl_aw_tag.setText(phrase_item.get("type", "短语"))
         self.lbl_aw_tag.show()
+        self.btn_aw_speak.show()
+        self.btn_aw_add.show()
 
         meaning_text = f"<b>短语释义:</b> {phrase_item['cn']}"
         if phrase_item.get("display") and phrase_item["display"] != phrase_item["phrase"]:
@@ -739,10 +829,19 @@ class MainWindow(QMainWindow):
         self.active_word_detail = detail
 
         self.lbl_aw_word.setText(detail["word"])
+        if detail.get("phonetic"):
+            self.lbl_aw_phonetic.setText(detail["phonetic"])
+            self.lbl_aw_phonetic.show()
+        else:
+            self.lbl_aw_phonetic.hide()
+
         self.lbl_aw_tag.setText(detail.get("type", "词汇"))
         self.lbl_aw_tag.show()
-        
-        self.lbl_aw_meaning.setText(f"<b>释义:</b> {detail['cn']}")
+        self.btn_aw_speak.show()
+        self.btn_aw_add.show()
+
+        cn_text = detail['cn'].replace('\n', '<br>')
+        self.lbl_aw_meaning.setText(f"<b>释义:</b><br>{cn_text}" if '\n' in detail['cn'] else f"<b>释义:</b> {cn_text}")
 
         # 检查该词是否属于检测到的某个短语
         matched_phrase = next((p for p in self.current_phrases if low in p["phrase"].lower()), None)
@@ -867,9 +966,11 @@ class MainWindow(QMainWindow):
             w_line.addStretch()
             left.addLayout(w_line)
 
-            cn_lbl = QLabel(item["cn"])
-            cn_lbl.setStyleSheet("color: #e0e0e0; font-size: 12px;")
+            cn_text = item["cn"].replace('\n', '<br>')
+            cn_lbl = QLabel(f"<b>释义:</b><br>{cn_text}" if '\n' in item["cn"] else f"<b>释义:</b> {cn_text}")
+            cn_lbl.setStyleSheet("color: #e0e0e0; font-size: 12px; line-height: 1.3;")
             cn_lbl.setWordWrap(True)
+            cn_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             left.addWidget(cn_lbl)
 
             if item.get("lore"):
@@ -954,37 +1055,60 @@ class MainWindow(QMainWindow):
 
     # ================= 生词本管理 =================
     def load_notebook_cards(self):
-        self.list_cards.clear()
+        while self.notebook_layout.count() > 1:
+            child = self.notebook_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
         query = self.input_search.text()
         cards = database.get_all_cards(query)
 
+        insert_idx = 0
         for c in cards:
-            item = QListWidgetItem()
-            card = QWidget()
+            card = QFrame()
+            card.setObjectName("notebook_card")
+            card.setStyleSheet("""
+                #notebook_card {
+                    background-color: #1a1c26;
+                    border: 1px solid #333649;
+                    border-radius: 6px;
+                }
+                #notebook_card:hover {
+                    border-color: #00e5ff;
+                }
+            """)
             cl = QVBoxLayout(card)
-            cl.setContentsMargins(10, 8, 10, 8)
+            cl.setContentsMargins(8, 7, 8, 7)
             cl.setSpacing(4)
 
             top = QHBoxLayout()
+            top.setSpacing(4)
             w_lbl = QLabel(f"<b>{c['word']}</b> <font color='#888'>{c['phonetic'] or ''}</font>")
-            w_lbl.setStyleSheet("font-size: 14px; color: #4fc3f7;")
-            top.addWidget(w_lbl)
-            top.addStretch()
+            w_lbl.setStyleSheet("font-size: 13px; color: #4fc3f7;")
+            w_lbl.setWordWrap(True)
+            top.addWidget(w_lbl, stretch=1)
 
-            btn_tts = QPushButton("🔊 朗读")
+            btn_tts = QPushButton("🔊")
             btn_tts.setProperty("class", "card_action_btn")
+            btn_tts.setToolTip("朗读发音")
+            btn_tts.setFixedWidth(28)
             btn_tts.clicked.connect(lambda _, w=c['word']: self.tts.say(w))
             top.addWidget(btn_tts)
 
-            btn_del = QPushButton("🗑️ 删除")
+            btn_del = QPushButton("🗑️")
             btn_del.setProperty("class", "card_action_btn")
             btn_del.setStyleSheet("background-color: #5d1010; border-color: #791a1a;")
+            btn_del.setToolTip("从生词本删除")
+            btn_del.setFixedWidth(28)
             btn_del.clicked.connect(lambda _, cid=c['id']: self.delete_vocab(cid))
             top.addWidget(btn_del)
             cl.addLayout(top)
 
-            trans = QLabel(f"<b>释义:</b> {c['translation']}")
-            trans.setStyleSheet("color: #e0e0e0; font-size: 12px;")
+            trans_text = c['translation'].replace('\n', '<br>')
+            trans = QLabel(f"<b>释义:</b><br>{trans_text}" if '\n' in c['translation'] else f"<b>释义:</b> {trans_text}")
+            trans.setStyleSheet("color: #e0e0e0; font-size: 12px; line-height: 1.3;")
+            trans.setWordWrap(True)
+            trans.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             cl.addWidget(trans)
 
             if c['context_sentence']:
@@ -999,9 +1123,8 @@ class MainWindow(QMainWindow):
                 lore.setWordWrap(True)
                 cl.addWidget(lore)
 
-            item.setSizeHint(card.sizeHint())
-            self.list_cards.addItem(item)
-            self.list_cards.setItemWidget(item, card)
+            self.notebook_layout.insertWidget(insert_idx, card)
+            insert_idx += 1
 
     def delete_vocab(self, card_id):
         database.delete_card(card_id)
@@ -1090,30 +1213,47 @@ class MainWindow(QMainWindow):
             #btn_snip {
                 background-color: #00838f;
                 color: #ffffff;
-                font-size: 13px;
+                font-size: 12px;
                 font-weight: bold;
-                padding: 8px 16px;
-                border-radius: 6px;
+                padding: 5px 8px;
+                border-radius: 5px;
                 border: 1px solid #00acc1;
             }
             #btn_snip:hover {
                 background-color: #00acc1;
             }
+            #btn_top_speak {
+                padding: 5px 8px;
+                font-size: 12px;
+                border-radius: 5px;
+            }
+            #btn_retranslate_inline {
+                background-color: #242838;
+                color: #00e5ff;
+                border: 1px solid #00acc1;
+                font-size: 11px;
+                padding: 2px 7px;
+                border-radius: 4px;
+            }
+            #btn_retranslate_inline:hover {
+                background-color: #00acc1;
+                color: #ffffff;
+            }
             QPushButton {
                 background-color: #2e303e;
                 color: #ffffff;
                 border: 1px solid #3e4256;
-                padding: 6px 12px;
+                padding: 5px 10px;
                 border-radius: 4px;
             }
             QPushButton:hover {
                 background-color: #3e4256;
             }
             .card_action_btn {
-                padding: 3px 10px;
+                padding: 2px 5px;
                 font-size: 11px;
-                min-width: 58px;
-                height: 24px;
+                min-width: 26px;
+                height: 22px;
                 border-radius: 4px;
                 background-color: #303346;
                 border: 1px solid #484c66;
@@ -1126,9 +1266,9 @@ class MainWindow(QMainWindow):
                 background-color: #282a38;
                 color: #ffffff;
                 border: 1px solid #42465e;
-                padding: 5px 12px;
-                border-radius: 13px;
-                font-size: 13px;
+                padding: 4px 10px;
+                border-radius: 12px;
+                font-size: 12px;
                 font-weight: 500;
             }
             .word_chip:hover {
@@ -1139,17 +1279,17 @@ class MainWindow(QMainWindow):
                 background-color: #0f3442;
                 color: #00e5ff;
                 border: 2px solid #00e5ff;
-                padding: 4px 11px;
-                border-radius: 13px;
-                font-size: 13px;
+                padding: 3px 9px;
+                border-radius: 12px;
+                font-size: 12px;
                 font-weight: bold;
             }
             .phrase_chip {
                 background-color: #3e2617;
                 color: #ffcc80;
                 border: 1px solid #ff9800;
-                padding: 4px 11px;
-                border-radius: 13px;
+                padding: 4px 10px;
+                border-radius: 12px;
                 font-size: 12px;
                 font-weight: 500;
             }
@@ -1162,8 +1302,8 @@ class MainWindow(QMainWindow):
                 background-color: #5d2b09;
                 color: #ffffff;
                 border: 2px solid #ff9800;
-                padding: 3px 10px;
-                border-radius: 13px;
+                padding: 3px 9px;
+                border-radius: 12px;
                 font-size: 12px;
                 font-weight: bold;
             }
@@ -1171,7 +1311,7 @@ class MainWindow(QMainWindow):
                 background-color: #372818;
                 color: #ffb74d;
                 border: 1px dashed #ff9800;
-                padding: 2px 8px;
+                padding: 2px 6px;
                 font-size: 11px;
                 border-radius: 4px;
             }
@@ -1215,9 +1355,9 @@ class MainWindow(QMainWindow):
                 background-color: #16161a;
                 border: 1px solid #33333f;
                 border-radius: 4px;
-                padding: 6px;
+                padding: 5px;
                 color: #f0f0f0;
-                font-size: 13px;
+                font-size: 12px;
             }
             QTabWidget::pane {
                 border: 1px solid #33333f;
@@ -1227,7 +1367,8 @@ class MainWindow(QMainWindow):
             QTabBar::tab {
                 background: #18181c;
                 color: #a0a0a0;
-                padding: 8px 14px;
+                padding: 5px 8px;
+                font-size: 12px;
                 border-top-left-radius: 4px;
                 border-top-right-radius: 4px;
             }
@@ -1242,34 +1383,36 @@ class MainWindow(QMainWindow):
                 border-radius: 6px;
                 padding: 8px;
             }
-            QListWidget {
-                background-color: #16161a;
-                border: 1px solid #33333f;
-                border-radius: 4px;
-            }
-            QListWidget::item {
-                border-bottom: 1px solid #252530;
-            }
-            #inspector_scroll, #chips_scroll {
+            #inspector_scroll, #chips_scroll, #notebook_scroll, #glossary_scroll {
                 border: none;
                 background-color: transparent;
             }
-            #inspector_content {
+            #inspector_content, #notebook_container, #glossary_container {
                 background-color: transparent;
             }
             QScrollBar:vertical {
                 border: none;
                 background: #141419;
-                width: 9px;
-                border-radius: 4px;
+                width: 7px;
+                border-radius: 3px;
             }
             QScrollBar::handle:vertical {
                 background: #3c4056;
-                min-height: 28px;
-                border-radius: 4px;
+                min-height: 24px;
+                border-radius: 3px;
             }
             QScrollBar::handle:vertical:hover {
                 background: #00e5ff;
+            }
+            QScrollBar:horizontal {
+                height: 0px !important;
+                max-height: 0px !important;
+                border: none;
+                background: transparent;
+            }
+            QScrollBar::handle:horizontal, QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+                width: 0px !important;
+                height: 0px !important;
             }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
                 height: 0px;
