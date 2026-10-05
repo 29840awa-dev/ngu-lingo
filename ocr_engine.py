@@ -23,6 +23,7 @@ def clean_ocr_text(raw_text: str) -> str:
       - 括号粘连: (Usethearrowkeys -> (Use the arrow keys
       - 驼峰粘连: PeopleCall / GladYou / WhoMade -> People Call / Glad You / Who Made
       - 紧密单词: thisgame -> this game, whomade -> who made, whichis -> which is
+      - 边界重叠伪字符: Energy e every -> Energy every, that t the -> that the
       - 常见数字/字母OCR混淆: 5o0 -> 500, 1o0 -> 100
     """
     if not raw_text:
@@ -51,7 +52,8 @@ def clean_ocr_text(raw_text: str) -> str:
         (r'\barrow son\b', 'arrows on'),
         (r'\barrowson\b', 'arrows on'),
         (r'\blet\'sbegin\b', "let's begin"),
-        (r'\bletsbegin\b', "let's begin")
+        (r'\bletsbegin\b', "let's begin"),
+        (r'\buntil your hit\b', "until you hit")
     ]
     for pattern, repl in special_fixes:
         text = re.sub(pattern, repl, text, flags=re.IGNORECASE)
@@ -65,7 +67,10 @@ def clean_ocr_text(raw_text: str) -> str:
     # 4. 驼峰命名拆分 (e.g. PeopleCall -> People Call)
     text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
 
-    # 5. 逐词检测与拆分粘连词
+    # 5. 跨框重叠孤立单字母消重 (如 Energy e every -> Energy every, that t the -> that the)
+    text = re.sub(r'\b([A-Za-z]+)\s+([a-zA-Z])\s+(\2[a-zA-Z]*)', r'\1 \3', text, flags=re.IGNORECASE)
+
+    # 6. 逐词检测与拆分粘连词
     tokens = text.split()
     result_tokens = []
     
@@ -90,7 +95,6 @@ def clean_ocr_text(raw_text: str) -> str:
                     fixed_word = segmented[0].capitalize() + (' ' + ' '.join(segmented[1:]) if len(segmented) > 1 else '')
                 else:
                     fixed_word = ' '.join(segmented)
-                # 修复固定搭配
                 fixed_word = re.sub(r'\barrow son\b', 'arrows on', fixed_word)
                 result_tokens.append(f'{prefix}{fixed_word}{suffix}')
                 continue
@@ -102,6 +106,7 @@ def clean_ocr_text(raw_text: str) -> str:
     clean = re.sub(r'\s+([,\.!\?:;\)])', r'\1', clean)
     clean = re.sub(r'(\()\s+', r'\1', clean)
     clean = re.sub(r'\s{2,}', ' ', clean)
+    clean = re.sub(r'\b([A-Za-z]+)\s+([a-zA-Z])\s+(\2[a-zA-Z]*)', r'\1 \3', clean, flags=re.IGNORECASE)
     return clean.strip()
 
 def fix_jammed_words(text: str) -> str:
@@ -122,6 +127,7 @@ class OCREngine:
         识别图像并返回结构化文本。
         采用基于垂直几何重叠的水平文本行聚类算法（Line Clustering）：
         - 同一行内的文本块严格自左向右（X递增）按自然语序排列，彻底根治同行动词与主语倒置的问题；
+        - 水平框交界处智能消重，杜绝因相邻切框重叠导致的单字符重复（如 Energy e every）；
         - 行与行之间按垂直自上向下排列；
         - 支持设置菜单独立换行与自然段落平滑拼接。
         """
@@ -182,11 +188,32 @@ class OCREngine:
         # 行间严格按垂直位置从上至下排序
         line_groups.sort(key=lambda lg: sum(b['ymid'] for b in lg) / len(lg))
 
-        # 行内文本块严格按水平位置从左至右（X递增）自然阅读排序
+        # 行内文本块严格按水平位置从左至右（X递增）自然阅读排序，并执行框边界去重
         lines = []
         for lg in line_groups:
             lg.sort(key=lambda b: b['xmin'])
-            raw_line = " ".join(b['text'] for b in lg)
+            merged_parts = []
+            for b in lg:
+                curr_txt = b['text'].strip()
+                if not curr_txt:
+                    continue
+                if merged_parts:
+                    prev_txt = merged_parts[-1]
+                    deduped = False
+                    # 检查重叠字串 (如 'everyti' 与 'timethat')
+                    for k in range(min(len(prev_txt), len(curr_txt), 8), 0, -1):
+                        if prev_txt.lower().endswith(curr_txt[:k].lower()):
+                            merged_parts[-1] = prev_txt[:-k].rstrip()
+                            deduped = True
+                            break
+                    if not deduped:
+                        # 检查前块末尾孤立单字符是否与当前块首字母重复 (如 'Energy e' 与 'every')
+                        m = re.search(r'\s+([a-zA-Z])$', prev_txt)
+                        if m and curr_txt and curr_txt[0].lower() == m.group(1).lower():
+                            merged_parts[-1] = prev_txt[:-len(m.group(0))].rstrip()
+                merged_parts.append(curr_txt)
+
+            raw_line = " ".join(merged_parts)
             cleaned_line = clean_ocr_text(raw_line)
             if cleaned_line:
                 lines.append(cleaned_line)
