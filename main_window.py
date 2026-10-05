@@ -801,13 +801,13 @@ class MainWindow(QMainWindow):
                 item.widget().deleteLater()
 
         is_menu = is_settings_menu_text(sentence) or "\n" in sentence
-        tokens = re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?|[^\s\w]", sentence)
+        tokens = re.findall(r"[A-Za-z0-9]+(?:'[A-Za-z0-9]+)?|[^\s\w]", sentence)
         first_word_chip = None
         seen_words = set()
         noise = {"on", "off", "yes", "no", "true", "false", "plain", "fancy", "some", "more"}
 
         for token in tokens:
-            if re.match(r"[A-Za-z]", token):
+            if re.search(r"[A-Za-z]", token):
                 low = token.lower()
                 # 菜单/多列模式下，过滤高频UI杂音并去重
                 if is_menu:

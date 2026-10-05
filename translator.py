@@ -199,8 +199,9 @@ class TranslationService:
         return "（未识别到联网整句释义，请检查网络后点击【重新翻译】）"
 
     def extract_words(self, text: str):
-        """从句子中提取纯英文单词列表（过滤单字母及高频UI开关杂音，如 On/Off/Yes/No）"""
-        words = re.findall(r"\b[A-Za-z]+(?:'[A-Za-z]+)?\b", text)
+        """从句子中提取纯英文单词列表（过滤纯数字单字母及高频UI开关杂音，如 On/Off/Yes/No）"""
+        raw_words = re.findall(r"\b[A-Za-z0-9]+(?:'[A-Za-z0-9]+)?\b", text)
+        words = [w for w in raw_words if re.search(r"[A-Za-z]", w)]
         filtered = []
         noise = {"on", "off", "yes", "no", "true", "false", "plain", "fancy", "some", "more"}
         is_long_or_menu = len(words) > 8 or is_settings_menu_text(text)
