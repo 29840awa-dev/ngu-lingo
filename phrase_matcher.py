@@ -15,6 +15,13 @@ import database
 COMMON_PHRASES = [
     # === 经典习惯用语与动词短语 (带正则模式) ===
     {
+        "pattern": r"\bpat\s+(?:yourself|oneself|someone|himself|herself|myself)\s+on\s+the\s+back\b",
+        "display": "pat oneself on the back",
+        "cn": "为自己感到自豪 / 拍拍后背夸夸自己",
+        "type": "固定习语",
+        "lore": "经典英语俚语，指因取得成就而表扬或肯定自己（字面意思是拍拍自己的背以示嘉奖）。游戏作者在此处恶搞接了句 'Not too low, that's just weird'！"
+    },
+    {
         "pattern": r"\bget\s+to\s+(?:your|my|his|her|their|our|one's)\s+feet\b",
         "display": "get to one's feet",
         "cn": "站起来；挣扎着站立",

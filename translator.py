@@ -96,40 +96,8 @@ class TranslationService:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
 
-    def translate_sentence(self, text: str) -> str:
-        """
-        高精度整句翻译：
-        1. 优先查本地 SQLite 句子永久缓存 (sentence_cache)，0毫秒秒开
-        2. 多引擎极速并发竞速 (Google GTX / 网易有道移动端 / MyMemory / 有道开放接口)，首个返回者即采纳
-        3. 自动入库持久化，保障毫秒级响应与地道通顺中文
-        4. 离线友好兜底
-        """
-        clean_text = text.strip()
-        if not clean_text:
-            return ""
-
-        # 1. 智能检测是否为 NGU 系统设置界面，直接输出结构化全设置汉化指南
-        if is_settings_menu_text(clean_text):
-            return get_settings_guide_markdown()
-
-        # 2. 核心优化：优先匹配 NGU 官方汉化补丁原生语料包 (0ms 本地秒出，100%纯正地道)
-        try:
-            game_trans = database.get_game_translation(clean_text)
-            if game_trans:
-                database.set_cached_sentence(clean_text, game_trans)
-                return game_trans
-        except Exception:
-            pass
-
-        # 3. 优先查本地 SQLite 句子永久缓存
-        try:
-            cached = database.get_cached_sentence(clean_text)
-            if cached:
-                return cached
-        except Exception:
-            pass
-
-        # 3. 多引擎并发极速竞速
+    def _fetch_online_translation(self, clean_text: str) -> str:
+        """多引擎极速竞速在线整句直译（Google / 有道移动端 / MyMemory / 有道AIDemo）"""
         import urllib.parse
 
         def fetch_google():
@@ -155,7 +123,6 @@ class TranslationService:
             raise RuntimeError("Youdao mobile translate failed")
 
         def fetch_mymemory():
-            # MyMemory 有 500 字符硬性上限，长文本主动跳过避免触发限制报错
             if len(clean_text) > 380:
                 raise RuntimeError("Query too long for MyMemory")
             url = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(clean_text)}&langpair=en|zh-CN"
@@ -184,16 +151,11 @@ class TranslationService:
                 try:
                     result = future.result()
                     if result:
-                        # 自动存入本地 SQLite 缓存
-                        try:
-                            database.set_cached_sentence(clean_text, result)
-                        except Exception:
-                            pass
                         return result
                 except Exception:
                     continue
 
-        # 4. 若全部网络请求超时或处于断网环境，进行离线兜底提示
+        # 离线单字兜底
         words = self.extract_words(clean_text)
         known = []
         for w in words:
@@ -204,8 +166,94 @@ class TranslationService:
                 known.append(f"{w} [{COMMON_DICT[low]}]")
 
         if known:
-            return "（⚠️ 当前网络连接超时，未能获取连贯整句翻译。以下为单字离线参考）：\n" + "，".join(known)
+            return "（⚠️ 当前网络连接超时，以下为单字离线参考）：\n" + "，".join(known)
         return "（未识别到联网整句释义，请检查网络后点击【重新翻译】）"
+
+    def translate_direct(self, text: str) -> str:
+        """
+        纯粹逐句逐词直译（彻底绕过游戏补丁的意译与省略，保留最原汁原味的细节与英语段子）
+        专供划选即时查译与学习对照使用
+        """
+        clean_text = text.strip()
+        if not clean_text:
+            return ""
+
+        # 优先查直译缓存
+        try:
+            cached = database.get_cached_sentence(clean_text, prefix="direct")
+            if cached:
+                return cached
+        except Exception:
+            pass
+
+        result = self._fetch_online_translation(clean_text)
+        if result and not result.startswith("（"):
+            try:
+                database.set_cached_sentence(clean_text, result, prefix="direct")
+            except Exception:
+                pass
+        return result
+
+    def translate_sentence_info(self, text: str) -> dict:
+        """
+        整句翻译元信息：
+        返回包含 trans, is_game (是否来自官方汉化), game_trans, direct_trans 的完整字典
+        """
+        clean_text = text.strip()
+        if not clean_text:
+            return {"trans": "", "is_game": False, "game_trans": None, "direct_trans": None}
+
+        if is_settings_menu_text(clean_text):
+            guide = get_settings_guide_markdown()
+            return {"trans": guide, "is_game": False, "game_trans": None, "direct_trans": guide}
+
+        # 1. 优先查是否命中官方游戏汉化
+        game_trans = None
+        try:
+            game_trans = database.get_game_translation(clean_text)
+        except Exception:
+            pass
+
+        if game_trans:
+            database.set_cached_sentence(clean_text, game_trans)
+            return {
+                "trans": game_trans,
+                "is_game": True,
+                "game_trans": game_trans,
+                "direct_trans": None
+            }
+
+        # 2. 查本地普通句子缓存
+        try:
+            cached = database.get_cached_sentence(clean_text)
+            if cached:
+                return {
+                    "trans": cached,
+                    "is_game": False,
+                    "game_trans": None,
+                    "direct_trans": cached
+                }
+        except Exception:
+            pass
+
+        # 3. 在线直译
+        direct = self.translate_direct(clean_text)
+        if direct and not direct.startswith("（"):
+            try:
+                database.set_cached_sentence(clean_text, direct)
+            except Exception:
+                pass
+        return {
+            "trans": direct,
+            "is_game": False,
+            "game_trans": None,
+            "direct_trans": direct
+        }
+
+    def translate_sentence(self, text: str) -> str:
+        """保持原有兼容性的整句翻译调用"""
+        info = self.translate_sentence_info(text)
+        return info.get("trans", "")
 
     def extract_words(self, text: str):
         """从句子中提取纯英文单词列表（过滤纯数字单字母及高频UI开关杂音，如 On/Off/Yes/No）"""

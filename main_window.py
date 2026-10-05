@@ -11,7 +11,7 @@ import random
 import time
 from PIL import Image
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QRect, QSize, QEvent, QObject
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QRect, QSize, QEvent, QObject, QTimer
 from PyQt6.QtGui import QIcon, QFont, QColor, QImage, QPixmap, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -187,8 +187,8 @@ class FlowLayout(QLayout):
 
 # 后台 OCR 与翻译线程 (零拷贝内存直通与多线程并发解析)
 class ProcessWorker(QThread):
-    # full_text, translation, ngu_matches, words_detail, phrases_detail
-    finished = pyqtSignal(str, str, list, list, list)
+    # full_text, translation(dict or str), ngu_matches, words_detail, phrases_detail
+    finished = pyqtSignal(str, object, list, list, list)
     error = pyqtSignal(str)
 
     def __init__(self, img_input, ocr_engine, trans_service, phrase_matcher):
@@ -223,8 +223,8 @@ class ProcessWorker(QThread):
                 self.finished.emit("", "未检测到清晰英文字符，请重新框选", [], [], [])
                 return
 
-            # 整句翻译
-            trans_result = self.trans_service.translate_sentence(full_text)
+            # 整句翻译与元数据探测
+            trans_result = self.trans_service.translate_sentence_info(full_text)
             
             # 检测 NGU 机制与梗
             ngu_matches = self.trans_service.analyze_ngu_context(full_text)
@@ -239,6 +239,40 @@ class ProcessWorker(QThread):
             self.finished.emit(full_text, trans_result, ngu_matches, words_detail, phrases_detail)
         except Exception as e:
             self.error.emit(str(e))
+
+
+# 划选即时查译异步后台线程
+class SelectionWorker(QThread):
+    finished = pyqtSignal(dict)
+
+    def __init__(self, text, is_word, trans_svc, phrase_matcher, word_map):
+        super().__init__()
+        self.text = text
+        self.is_word = is_word
+        self.trans_svc = trans_svc
+        self.phrase_matcher = phrase_matcher
+        self.word_map = word_map
+
+    def run(self):
+        res = {"text": self.text, "is_word": self.is_word, "zh": "", "note": "", "phonetic": ""}
+        try:
+            if self.is_word:
+                w_low = self.text.lower()
+                detail = self.word_map.get(w_low) or self.trans_svc.get_word_detail(self.text)
+                res["zh"] = detail.get("cn", "")
+                res["phonetic"] = detail.get("phonetic", "")
+                if detail.get("lore"):
+                    res["note"] = f"💡 {detail['lore']}"
+            else:
+                phrases = self.phrase_matcher.detect_phrases(self.text)
+                direct_trans = self.trans_svc.translate_direct(self.text)
+                res["zh"] = direct_trans
+                if phrases:
+                    p_notes = [f"🔗 【{p['display']}】: {p['cn']}" for p in phrases]
+                    res["note"] = " | ".join(p_notes)
+        except Exception as e:
+            res["zh"] = f"（查译失败: {e}）"
+        self.finished.emit(res)
 
 
 class MainWindow(QMainWindow):
@@ -266,6 +300,20 @@ class MainWindow(QMainWindow):
         self.word_detail_map = {}
         self.active_chip_btn = None
         self.active_word_detail = None
+
+        # 划选即时查译状态与定时器 (250ms防抖)
+        self.selection_timer = QTimer(self)
+        self.selection_timer.setSingleShot(True)
+        self.selection_timer.setInterval(250)
+        self.selection_timer.timeout.connect(self.handle_text_en_selection)
+        self.current_selection_text = ""
+        self.current_selection_detail = None
+        self.selection_worker = None
+
+        # 双翻译模式跟踪 (游戏官方汉化 vs 学习原味直译)
+        self.current_game_trans = ""
+        self.current_direct_trans = ""
+        self.current_trans_mode = "game"
 
         self.init_ui()
         self.apply_dark_theme()
@@ -374,11 +422,108 @@ class MainWindow(QMainWindow):
         self.text_en.setFixedHeight(90)
         self.text_en.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         self.text_en.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.text_en.selectionChanged.connect(self.on_text_en_selection_changed)
         layout.addWidget(self.text_en)
 
+        # 核心功能 0：划选即时查译浮动卡片 (Selection Inspector)
+        self.selection_frame = QFrame()
+        self.selection_frame.setObjectName("selection_frame")
+        self.selection_frame.setStyleSheet("""
+            #selection_frame {
+                background: #111e2e;
+                border: 1px solid #38bdf8;
+                border-radius: 6px;
+            }
+        """)
+        sf_layout = QVBoxLayout(self.selection_frame)
+        sf_layout.setContentsMargins(10, 8, 10, 8)
+        sf_layout.setSpacing(5)
+
+        sf_header = QHBoxLayout()
+        sf_header.setSpacing(6)
+        self.lbl_sf_title = QLabel("🎯 划选即时直译:")
+        self.lbl_sf_title.setStyleSheet("font-weight: bold; color: #38bdf8; font-size: 11px;")
+        sf_header.addWidget(self.lbl_sf_title)
+        
+        self.lbl_sf_len = QLabel("")
+        self.lbl_sf_len.setStyleSheet("color: #64748b; font-size: 10px;")
+        sf_header.addWidget(self.lbl_sf_len)
+        sf_header.addStretch()
+
+        self.btn_sf_speak = QPushButton("🔊 朗读")
+        self.btn_sf_speak.setProperty("class", "card_action_btn")
+        self.btn_sf_speak.clicked.connect(self.speak_selected_text)
+        sf_header.addWidget(self.btn_sf_speak)
+
+        self.btn_sf_add = QPushButton("➕ 收藏")
+        self.btn_sf_add.setProperty("class", "card_action_btn")
+        self.btn_sf_add.setStyleSheet("background-color: #00695c; border-color: #00897b;")
+        self.btn_sf_add.clicked.connect(self.add_selected_text_to_db)
+        sf_header.addWidget(self.btn_sf_add)
+
+        self.btn_sf_close = QPushButton("✕")
+        self.btn_sf_close.setProperty("class", "card_action_btn")
+        self.btn_sf_close.setFixedWidth(22)
+        self.btn_sf_close.setToolTip("关闭划选查译卡片")
+        self.btn_sf_close.clicked.connect(self.selection_frame.hide)
+        sf_header.addWidget(self.btn_sf_close)
+        sf_layout.addLayout(sf_header)
+
+        self.lbl_sf_en = QLabel("")
+        self.lbl_sf_en.setStyleSheet("color: #94a3b8; font-size: 11px; font-style: italic;")
+        self.lbl_sf_en.setWordWrap(True)
+        sf_layout.addWidget(self.lbl_sf_en)
+
+        self.lbl_sf_zh = QLabel("")
+        self.lbl_sf_zh.setStyleSheet("color: #f8fafc; font-size: 12px; font-weight: bold; line-height: 1.4;")
+        self.lbl_sf_zh.setWordWrap(True)
+        self.lbl_sf_zh.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        sf_layout.addWidget(self.lbl_sf_zh)
+
+        self.lbl_sf_note = QLabel("")
+        self.lbl_sf_note.setStyleSheet("color: #fbbf24; font-size: 11px; background: #261f12; padding: 4px 6px; border-radius: 4px;")
+        self.lbl_sf_note.setWordWrap(True)
+        self.lbl_sf_note.hide()
+        sf_layout.addWidget(self.lbl_sf_note)
+
+        self.selection_frame.hide()
+        layout.addWidget(self.selection_frame)
+
+        # 整句释义标题栏 (含官方汉化/直译标签与一键切换按钮)
+        zh_header = QHBoxLayout()
+        zh_header.setContentsMargins(0, 0, 0, 0)
         lbl_zh = QLabel("整句释义:")
         lbl_zh.setStyleSheet("font-weight: bold; color: #81c784; font-size: 12px;")
-        layout.addWidget(lbl_zh)
+        zh_header.addWidget(lbl_zh)
+
+        self.lbl_zh_badge = QLabel("")
+        self.lbl_zh_badge.setStyleSheet("background: #1b382b; color: #81c784; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: bold;")
+        self.lbl_zh_badge.hide()
+        zh_header.addWidget(self.lbl_zh_badge)
+        zh_header.addStretch()
+
+        self.btn_toggle_mode = QPushButton("🔁 切换学习直译")
+        self.btn_toggle_mode.setObjectName("btn_toggle_mode")
+        self.btn_toggle_mode.setStyleSheet("""
+            QPushButton#btn_toggle_mode {
+                background: #1e293b;
+                color: #38bdf8;
+                border: 1px solid #0284c7;
+                border-radius: 3px;
+                padding: 1px 8px;
+                font-size: 11px;
+            }
+            QPushButton#btn_toggle_mode:hover {
+                background: #0284c7;
+                color: #ffffff;
+            }
+        """)
+        self.btn_toggle_mode.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_toggle_mode.clicked.connect(self.toggle_translation_mode)
+        self.btn_toggle_mode.hide()
+        zh_header.addWidget(self.btn_toggle_mode)
+
+        layout.addLayout(zh_header)
 
         self.text_zh = QTextEdit()
         self.text_zh.setReadOnly(True)
@@ -790,8 +935,36 @@ class MainWindow(QMainWindow):
         for d in words_detail:
             self.word_detail_map[d["word"].lower()] = d
 
+        self.selection_frame.hide()
+        self.current_selection_text = ""
+
+        if isinstance(translation, dict):
+            trans_text = translation.get("trans", "")
+            is_game = translation.get("is_game", False)
+            self.current_game_trans = translation.get("game_trans") or (trans_text if is_game else "")
+            self.current_direct_trans = translation.get("direct_trans") or ""
+        else:
+            trans_text = str(translation)
+            is_game = bool(database.get_game_translation(full_text))
+            self.current_game_trans = trans_text if is_game else ""
+            self.current_direct_trans = ""
+
         self.text_en.setPlainText(full_text)
-        self.text_zh.setPlainText(translation)
+        self.text_zh.setPlainText(trans_text)
+
+        if is_game:
+            self.current_trans_mode = "game"
+            self.lbl_zh_badge.setText("🎮 官方汉化 (意译)")
+            self.lbl_zh_badge.setStyleSheet("background: #1b382b; color: #81c784; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: bold;")
+            self.lbl_zh_badge.show()
+            self.btn_toggle_mode.setText("🔁 切换学习直译")
+            self.btn_toggle_mode.show()
+        else:
+            self.current_trans_mode = "direct"
+            self.lbl_zh_badge.setText("🌐 智能直译")
+            self.lbl_zh_badge.setStyleSheet("background: #1e3a5f; color: #38bdf8; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: bold;")
+            self.lbl_zh_badge.show()
+            self.btn_toggle_mode.hide()
         
         if is_settings_menu_text(full_text):
             status_msg = "🎮 智能识别为【NGU 游戏系统设置菜单】，已按列解析全功能中文对照与推荐"
@@ -1013,6 +1186,145 @@ class MainWindow(QMainWindow):
         if self.active_word_detail:
             self.save_word_to_db(self.active_word_detail)
 
+    # ================= 划选即时查译与双模式切换 =================
+    def on_text_en_selection_changed(self):
+        """鼠标在原文框划选变化时触发防抖定时器"""
+        self.selection_timer.start(250)
+
+    def handle_text_en_selection(self):
+        """处理划选文本的即时直译与短语/单词深度拆解"""
+        cursor = self.text_en.textCursor()
+        if not cursor.hasSelection():
+            # 划选取消时自动隐藏浮动卡片
+            self.selection_frame.hide()
+            self.current_selection_text = ""
+            return
+
+        sel = cursor.selectedText().replace('\u2029', ' ').strip()
+        if not sel or len(sel) < 2:
+            return
+
+        if sel == self.current_selection_text and self.selection_frame.isVisible():
+            return
+
+        self.current_selection_text = sel
+
+        # 单独划选单一单词
+        words_in_sel = re.findall(r"\b[A-Za-z0-9]+(?:'[A-Za-z0-9]+)?\b", sel)
+        is_single_word = len(words_in_sel) == 1 and len(sel.split()) == 1
+
+        self.lbl_sf_en.setText(f"“{sel}”")
+        self.lbl_sf_len.setText(f"({len(sel)} 字符)")
+        self.lbl_sf_zh.setText("⏳ 正在即时直译中...")
+        self.lbl_sf_note.hide()
+        self.selection_frame.show()
+
+        if self.selection_worker and self.selection_worker.isRunning():
+            try:
+                self.selection_worker.terminate()
+            except Exception:
+                pass
+
+        self.selection_worker = SelectionWorker(
+            sel, is_single_word, self.trans_service, self.phrase_matcher, self.word_detail_map
+        )
+        self.selection_worker.finished.connect(self.on_selection_translated)
+        self.selection_worker.start()
+
+    def on_selection_translated(self, res):
+        """划选翻译结果返回，更新划选卡片及主查词卡片"""
+        if res.get("text") != self.current_selection_text:
+            return
+
+        zh_text = res.get("zh", "")
+        if res.get("phonetic"):
+            self.lbl_sf_zh.setText(f"<font color='#80deea'>{res['phonetic']}</font> {zh_text}")
+        else:
+            self.lbl_sf_zh.setText(zh_text)
+
+        if res.get("note"):
+            self.lbl_sf_note.setText(res["note"])
+            self.lbl_sf_note.show()
+        else:
+            self.lbl_sf_note.hide()
+
+        self.current_selection_detail = {
+            "word": res["text"],
+            "phonetic": res.get("phonetic", ""),
+            "translation": zh_text,
+            "context": self.current_sentence or res["text"],
+            "lore": res.get("note", "")
+        }
+
+        # 若划选为单词且已匹配到词块，同步更新下方查词详情卡片
+        if res.get("is_word"):
+            w_low = res["text"].lower()
+            detail = self.word_detail_map.get(w_low) or self.trans_service.get_word_detail(res["text"])
+            self.active_word_detail = detail
+            self.lbl_aw_word.setText(detail["word"])
+            if detail.get("phonetic"):
+                self.lbl_aw_phonetic.setText(detail["phonetic"])
+                self.lbl_aw_phonetic.show()
+            else:
+                self.lbl_aw_phonetic.hide()
+            self.lbl_aw_tag.setText(detail.get("type", "词汇"))
+            self.lbl_aw_tag.show()
+            self.btn_aw_speak.show()
+            self.btn_aw_add.show()
+            cn_display = detail['cn'].replace('\n', '<br>')
+            self.lbl_aw_meaning.setText(f"<b>释义:</b><br>{cn_display}" if '\n' in detail['cn'] else f"<b>释义:</b> {cn_display}")
+            if detail.get("lore"):
+                self.lbl_aw_lore.setText(f"💡 <b>游戏机制/梗:</b> {detail['lore']}")
+                self.lbl_aw_lore.show()
+            else:
+                self.lbl_aw_lore.hide()
+
+    def speak_selected_text(self):
+        """朗读划选的英文"""
+        if self.current_selection_text:
+            self.tts.say(self.current_selection_text)
+
+    def add_selected_text_to_db(self):
+        """将划选的内容加入生词本"""
+        if not self.current_selection_detail:
+            return
+        d = self.current_selection_detail
+        database.add_vocab_card(
+            word=d["word"],
+            phonetic=d.get("phonetic", ""),
+            translation=d.get("translation", ""),
+            context_sentence=d.get("context", ""),
+            lore_explanation=d.get("lore", ""),
+            tag="划选收录"
+        )
+        self.btn_sf_add.setText("✓ 已收藏")
+        self.btn_sf_add.setEnabled(False)
+        self.status_label.setText(f"已将划选内容「{d['word']}」保存到生词本！")
+        self.load_notebook_cards()
+        QTimer.singleShot(1500, lambda: (self.btn_sf_add.setText("➕ 收藏"), self.btn_sf_add.setEnabled(True)))
+
+    def toggle_translation_mode(self):
+        """在官方游戏汉化 (意译) 与 逐句原味直译 之间自由切换"""
+        if not self.current_sentence:
+            return
+        if self.current_trans_mode == "game":
+            # 切换为学习直译
+            if not self.current_direct_trans:
+                self.current_direct_trans = self.trans_service.translate_direct(self.current_sentence)
+            self.text_zh.setPlainText(self.current_direct_trans)
+            self.current_trans_mode = "direct"
+            self.lbl_zh_badge.setText("📚 学习直译 (保留原味细节)")
+            self.lbl_zh_badge.setStyleSheet("background: #1e3a5f; color: #38bdf8; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: bold;")
+            self.btn_toggle_mode.setText("🔁 切换官方汉化")
+        else:
+            # 切换回游戏官方汉化
+            if self.current_game_trans:
+                self.text_zh.setPlainText(self.current_game_trans)
+                self.current_trans_mode = "game"
+                self.lbl_zh_badge.setText("🎮 官方汉化 (意译)")
+                self.lbl_zh_badge.setStyleSheet("background: #1b382b; color: #81c784; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: bold;")
+                self.btn_toggle_mode.setText("🔁 切换学习直译")
+
     # ================= 词汇与短语拆解清单列表 =================
     def render_word_and_phrase_cards(self, words_detail, phrases_detail):
         while self.words_layout.count() > 1:
@@ -1158,8 +1470,27 @@ class MainWindow(QMainWindow):
         if text != raw_text:
             self.text_en.setPlainText(text)
         self.current_sentence = text
-        trans = self.trans_service.translate_sentence(text)
+        self.selection_frame.hide()
+        self.current_selection_text = ""
+        trans_info = self.trans_service.translate_sentence_info(text)
+        trans = trans_info.get("trans", "")
+        is_game = trans_info.get("is_game", False)
+        self.current_game_trans = trans_info.get("game_trans") or (trans if is_game else "")
+        self.current_direct_trans = trans_info.get("direct_trans") or ""
         self.text_zh.setPlainText(trans)
+        if is_game:
+            self.current_trans_mode = "game"
+            self.lbl_zh_badge.setText("🎮 官方汉化 (意译)")
+            self.lbl_zh_badge.setStyleSheet("background: #1b382b; color: #81c784; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: bold;")
+            self.lbl_zh_badge.show()
+            self.btn_toggle_mode.setText("🔁 切换学习直译")
+            self.btn_toggle_mode.show()
+        else:
+            self.current_trans_mode = "direct"
+            self.lbl_zh_badge.setText("🌐 智能直译")
+            self.lbl_zh_badge.setStyleSheet("background: #1e3a5f; color: #38bdf8; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: bold;")
+            self.lbl_zh_badge.show()
+            self.btn_toggle_mode.hide()
         
         matches = self.trans_service.analyze_ngu_context(text)
         if matches:

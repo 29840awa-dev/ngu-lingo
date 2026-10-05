@@ -203,11 +203,12 @@ def set_cached_word(word: str, phonetic: str, translation: str, tag: str = "ËØçÊ
     conn.commit()
     conn.close()
 
-def get_cached_sentence(text: str):
+def get_cached_sentence(text: str, prefix: str = ""):
     if not text or not text.strip():
         return None
     import hashlib
-    h = hashlib.md5(text.strip().lower().encode('utf-8')).hexdigest()
+    key = f"{prefix}:{text.strip().lower()}" if prefix else text.strip().lower()
+    h = hashlib.md5(key.encode('utf-8')).hexdigest()
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("SELECT zh_trans FROM sentence_cache WHERE hash = ?", (h,))
@@ -220,14 +221,15 @@ def get_cached_sentence(text: str):
         return val
     return None
 
-def set_cached_sentence(text: str, trans: str):
+def set_cached_sentence(text: str, trans: str, prefix: str = ""):
     if not text or not text.strip() or not trans or not trans.strip():
         return
     upper_trans = trans.upper()
     if "LIMIT EXCEEDED" in upper_trans or "MYMEMORY" in upper_trans or "ERROR" in upper_trans:
         return
     import hashlib
-    h = hashlib.md5(text.strip().lower().encode('utf-8')).hexdigest()
+    key = f"{prefix}:{text.strip().lower()}" if prefix else text.strip().lower()
+    h = hashlib.md5(key.encode('utf-8')).hexdigest()
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("""
