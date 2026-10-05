@@ -179,15 +179,17 @@ class ProcessWorker(QThread):
         try:
             # 零拷贝内存直通：在子线程极速转换为 numpy 数组，彻底移除主 UI 线程的 PNG 压缩开销
             if isinstance(self.img_input, QPixmap):
-                qimg = self.img_input.toImage().convertToFormat(QImage.Format.Format_RGB888)
+                qimg = self.img_input.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
                 ptr = qimg.bits()
                 ptr.setsize(qimg.sizeInBytes())
-                img_np = np.frombuffer(ptr, np.uint8).reshape((qimg.height(), qimg.width(), 3))
+                arr = np.frombuffer(ptr, np.uint8).reshape((qimg.height(), qimg.width(), 4))
+                img_np = np.ascontiguousarray(arr[:, :, :3])
             elif isinstance(self.img_input, QImage):
-                qimg = self.img_input.convertToFormat(QImage.Format.Format_RGB888)
+                qimg = self.img_input.convertToFormat(QImage.Format.Format_RGBA8888)
                 ptr = qimg.bits()
                 ptr.setsize(qimg.sizeInBytes())
-                img_np = np.frombuffer(ptr, np.uint8).reshape((qimg.height(), qimg.width(), 3))
+                arr = np.frombuffer(ptr, np.uint8).reshape((qimg.height(), qimg.width(), 4))
+                img_np = np.ascontiguousarray(arr[:, :, :3])
             elif isinstance(self.img_input, np.ndarray):
                 img_np = self.img_input
             else:
