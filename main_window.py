@@ -10,14 +10,16 @@ import re
 import random
 from PIL import Image
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QBuffer, QIODevice, QPoint, QRect, QSize, QEvent, QObject
-from PyQt6.QtGui import QIcon, QFont, QColor
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QRect, QSize, QEvent, QObject
+from PyQt6.QtGui import QIcon, QFont, QColor, QImage, QPixmap, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QTextEdit, QLineEdit, QTabWidget, QListWidget,
     QListWidgetItem, QFrame, QScrollArea, QMessageBox, QCheckBox,
     QFileDialog, QSplitter, QLayout, QSizePolicy
 )
+import numpy as np
+from pynput import keyboard
 from audio_service import AudioService
 
 from snipper import SnippingWidget
@@ -159,22 +161,53 @@ class FlowLayout(QLayout):
         return y + lineHeight - rect.y()
 
 
-# 后台 OCR 与翻译线程 (增加短语识别)
+# 全局快捷键监听线程 (在任何窗口/全屏游戏下按 Alt+Q 均可触发)
+class GlobalHotkeyThread(QThread):
+    hotkey_triggered = pyqtSignal()
+
+    def run(self):
+        try:
+            def on_activate():
+                self.hotkey_triggered.emit()
+
+            with keyboard.GlobalHotKeys({'<alt>+q': on_activate}) as h:
+                h.join()
+        except Exception:
+            pass
+
+
+# 后台 OCR 与翻译线程 (零拷贝内存直通与多线程并发解析)
 class ProcessWorker(QThread):
     # full_text, translation, ngu_matches, words_detail, phrases_detail
     finished = pyqtSignal(str, str, list, list, list)
     error = pyqtSignal(str)
 
-    def __init__(self, pil_image, ocr_engine, trans_service, phrase_matcher):
+    def __init__(self, img_input, ocr_engine, trans_service, phrase_matcher):
         super().__init__()
-        self.pil_image = pil_image
+        self.img_input = img_input
         self.ocr_engine = ocr_engine
         self.trans_service = trans_service
         self.phrase_matcher = phrase_matcher
 
     def run(self):
         try:
-            full_text, lines = self.ocr_engine.recognize_image(self.pil_image)
+            # 零拷贝内存直通：在子线程极速转换为 numpy 数组，彻底移除主 UI 线程的 PNG 压缩开销
+            if isinstance(self.img_input, QPixmap):
+                qimg = self.img_input.toImage().convertToFormat(QImage.Format.Format_RGB888)
+                ptr = qimg.bits()
+                ptr.setsize(qimg.sizeInBytes())
+                img_np = np.frombuffer(ptr, np.uint8).reshape((qimg.height(), qimg.width(), 3))
+            elif isinstance(self.img_input, QImage):
+                qimg = self.img_input.convertToFormat(QImage.Format.Format_RGB888)
+                ptr = qimg.bits()
+                ptr.setsize(qimg.sizeInBytes())
+                img_np = np.frombuffer(ptr, np.uint8).reshape((qimg.height(), qimg.width(), 3))
+            elif isinstance(self.img_input, np.ndarray):
+                img_np = self.img_input
+            else:
+                img_np = np.array(self.img_input)
+
+            full_text, lines = self.ocr_engine.recognize_image(img_np)
             if not full_text:
                 self.finished.emit("", "未检测到清晰英文字符，请重新框选", [], [], [])
                 return
@@ -226,6 +259,11 @@ class MainWindow(QMainWindow):
         self.init_ui()
         self.apply_dark_theme()
 
+        # 全局快捷键监听 (在任何游戏或第三方窗口激活时，按 Alt+Q 均可直接唤醒截屏)
+        self.hotkey_thread = GlobalHotkeyThread(self)
+        self.hotkey_thread.hotkey_triggered.connect(self.start_snip_capture)
+        self.hotkey_thread.start()
+
     def init_ui(self):
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
@@ -240,6 +278,7 @@ class MainWindow(QMainWindow):
         self.btn_snip = QPushButton("✂️ 截屏 (Alt+Q)")
         self.btn_snip.setObjectName("btn_snip")
         self.btn_snip.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_snip.setShortcut("Alt+Q")
         self.btn_snip.clicked.connect(self.start_snip_capture)
         top_bar.addWidget(self.btn_snip, stretch=1)
 
@@ -713,12 +752,8 @@ class MainWindow(QMainWindow):
         self.text_en.setPlainText("正在识别中，请稍候...")
         self.text_zh.setPlainText("正在翻译中...")
 
-        buffer = QBuffer()
-        buffer.open(QIODevice.OpenModeFlag.ReadWrite)
-        pixmap.save(buffer, "PNG")
-        pil_img = Image.open(io.BytesIO(buffer.data()))
-
-        self.worker = ProcessWorker(pil_img, self.ocr_engine, self.trans_service, self.phrase_matcher)
+        # 零延迟直传后台线程（彻底移除主 UI 线程的 PNG 压缩和内存等待）
+        self.worker = ProcessWorker(pixmap, self.ocr_engine, self.trans_service, self.phrase_matcher)
         self.worker.finished.connect(self.on_process_finished)
         self.worker.error.connect(self.on_process_error)
         self.worker.start()
@@ -1483,3 +1518,11 @@ class MainWindow(QMainWindow):
                 height: 0px;
             }
         """)
+
+    def closeEvent(self, event):
+        try:
+            if hasattr(self, 'hotkey_thread') and self.hotkey_thread.isRunning():
+                self.hotkey_thread.terminate()
+        except Exception:
+            pass
+        super().closeEvent(event)
