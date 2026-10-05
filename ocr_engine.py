@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 """
 本地 RapidOCR 引擎封装：支持快速离线识别屏幕截取图像中的文字，
-并内置智能英文黏连词自动分词（解决密集位图字体粘连问题，如 intensebattleofyourlife）
+具备高精度水平文本行聚类（Line Clustering）与智能自然阅读排序，
+并内置深度英文黏连词修复与排版清洗。
 """
 import re
 import numpy as np
 from PIL import Image
 from rapidocr_onnxruntime import RapidOCR
 import wordsegment
-from ngu_knowledge import NGU_GLOSSARY
+from ngu_knowledge import NGU_GLOSSARY, is_settings_menu_text
 
 # 初始化预加载英文词频分词模型
 wordsegment.load()
@@ -21,7 +22,8 @@ def clean_ocr_text(raw_text: str) -> str:
       - 符号粘连: navigate/spamthrough -> navigate / spam through
       - 括号粘连: (Usethearrowkeys -> (Use the arrow keys
       - 驼峰粘连: PeopleCall / GladYou / WhoMade -> People Call / Glad You / Who Made
-      - 紧密单词: thisgame -> this game, whomade -> who made, gladyou -> glad you
+      - 紧密单词: thisgame -> this game, whomade -> who made, whichis -> which is
+      - 常见数字/字母OCR混淆: 5o0 -> 500, 1o0 -> 100
     """
     if not raw_text:
         return ""
@@ -29,7 +31,11 @@ def clean_ocr_text(raw_text: str) -> str:
     # 0. 移除 OCR 异常控制字符与乱码符
     text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\ufffd]', ' ', raw_text)
 
-    # 1. 游戏特有专有词与排版的先验精准修复
+    # 1. 数字与字母混淆纠错 (如 5o0 -> 500)
+    text = re.sub(r'(\d)[oO](\d)', r'\g<1>0\g<2>', text)
+    text = re.sub(r'(\d)[oO]\b', r'\g<1>0', text)
+
+    # 2. 游戏特有专有词与排版的先验精准修复
     special_fixes = [
         (r'SOMESETTINGS', 'SOME SETTINGS'),
         (r'MORESETTINGS', 'MORE SETTINGS'),
@@ -50,24 +56,20 @@ def clean_ocr_text(raw_text: str) -> str:
     for pattern, repl in special_fixes:
         text = re.sub(pattern, repl, text, flags=re.IGNORECASE)
 
-    # 2. 标点符号与字母之间缺失空格的规范化修复
-    # 句号、逗号、问号、叹号、冒号、分号后紧跟字母 -> 补全空格 (e.g. short.You -> short. You, game.People -> game. People)
+    # 3. 标点符号与字母之间缺失空格的规范化修复
     text = re.sub(r'([A-Za-z0-9])([,\.!\?:;])([A-Za-z])', r'\1\2 \3', text)
-    # 斜杠两端补全空格 (e.g. navigate/spam -> navigate / spam)
     text = re.sub(r'([A-Za-z0-9])/([A-Za-z0-9])', r'\1 / \2', text)
-    # 括号与前后单词粘连 (e.g. (Use -> ( Use, tutorial!) -> tutorial! ))
     text = re.sub(r'\(([A-Za-z])', r'( \1', text)
     text = re.sub(r'([A-Za-z])\)', r'\1 )', text)
 
-    # 3. 驼峰命名拆分 (e.g. PeopleCall -> People Call, GladYou -> Glad You, Whomade -> Who made)
+    # 4. 驼峰命名拆分 (e.g. PeopleCall -> People Call)
     text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
 
-    # 4. 逐词检测与拆分粘连词
+    # 5. 逐词检测与拆分粘连词
     tokens = text.split()
     result_tokens = []
     
     for token in tokens:
-        # 分离前缀标点、主体词、后缀标点 (e.g. '(thisgame.' -> '(', 'thisgame', '.')
         m = re.match(r'^([^A-Za-z0-9]*)([A-Za-z0-9]+(?:\'[A-Za-z0-9]+)?)([^A-Za-z0-9]*)$', token)
         if not m:
             result_tokens.append(token)
@@ -75,15 +77,14 @@ def clean_ocr_text(raw_text: str) -> str:
         prefix, word, suffix = m.groups()
         low = word.lower()
 
-        # 如果已经是词表已知单词或 NGU 专属术语，且长度不算过长，直接保留
-        if low in NGU_GLOSSARY or (low in wordsegment.UNIGRAMS and len(word) < 14):
+        # 如果已经是 NGU 专属术语，直接保留
+        if low in NGU_GLOSSARY:
             result_tokens.append(token)
             continue
 
         # 尝试分词拆分
         segmented = wordsegment.segment(word)
         if len(segmented) > 1:
-            # 校验拆分出来的词是否合理 (每个小词在词频库中，或是极短合法代词)
             if all(s in wordsegment.UNIGRAMS for s in segmented):
                 if word[0].isupper():
                     fixed_word = segmented[0].capitalize() + (' ' + ' '.join(segmented[1:]) if len(segmented) > 1 else '')
@@ -118,10 +119,11 @@ class OCREngine:
 
     def recognize_image(self, img_input):
         """
-        识别图像并返回组合好的文本以及按行分块的识别结果。
-        智能检测多列界面（如游戏菜单、多栏设置项），支持分栏独立纵向排序与换行保留。
-        :param img_input: PIL.Image, numpy.ndarray 或文件路径
-        :return: (full_text: str, line_results: list)
+        识别图像并返回结构化文本。
+        采用基于垂直几何重叠的水平文本行聚类算法（Line Clustering）：
+        - 同一行内的文本块严格自左向右（X递增）按自然语序排列，彻底根治同行动词与主语倒置的问题；
+        - 行与行之间按垂直自上向下排列；
+        - 支持设置菜单独立换行与自然段落平滑拼接。
         """
         if isinstance(img_input, Image.Image):
             img_np = np.array(img_input)
@@ -142,58 +144,60 @@ class OCREngine:
         if not boxes:
             return "", []
 
-        # 智能多列排版检测与分栏
-        w = img_np.shape[1]
-        cov = np.zeros(w, dtype=int)
-        for b in boxes:
-            x_min = max(0, int(min(p[0] for p in b[0])))
-            x_max = min(w, int(max(p[0] for p in b[0])))
-            cov[x_min:x_max] += 1
+        # 提取各个检测框几何拓扑属性
+        box_data = []
+        for item in boxes:
+            pts = item[0]
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            box_data.append({
+                'xmin': min(xs),
+                'xmax': max(xs),
+                'ymin': min(ys),
+                'ymax': max(ys),
+                'ymid': (min(ys) + max(ys)) / 2.0,
+                'height': max(ys) - min(ys),
+                'text': item[1]
+            })
 
-        col_boundaries = [0]
-        in_gap = False
-        gap_start = 0
-        for x in range(w):
-            if cov[x] == 0:
-                if not in_gap:
-                    in_gap = True
-                    gap_start = x
-            else:
-                if in_gap:
-                    in_gap = False
-                    # 内部间隙宽度 >= 12 像素视为列分隔线
-                    if gap_start > 15 and x < w - 15 and (x - gap_start) >= 12:
-                        col_boundaries.append((gap_start + x) // 2)
-        col_boundaries.append(w)
+        # 初始按 Y 轴中线排序
+        box_data.sort(key=lambda b: b['ymid'])
 
-        is_multi_column = len(col_boundaries) > 2
-        ordered_boxes = []
-        if is_multi_column:
-            # 多列模式：先按列从左至右，每列内按纵向 Y 从上至下排序
-            columns = [[] for _ in range(len(col_boundaries) - 1)]
-            for b in boxes:
-                x_mid = (min(p[0] for p in b[0]) + max(p[0] for p in b[0])) / 2
-                for i in range(len(columns)):
-                    if col_boundaries[i] <= x_mid < col_boundaries[i+1]:
-                        columns[i].append(b)
-                        break
-            for col in columns:
-                col.sort(key=lambda b: min(p[1] for p in b[0]))
-                ordered_boxes.extend(col)
-        else:
-            # 单列/常规模式：保持从上到下阅读顺序
-            ordered_boxes = sorted(boxes, key=lambda b: min(p[1] for p in b[0]))
+        # 水平行聚类：当两块垂直重叠超过 40% 时归为同一行
+        line_groups = []
+        for b in box_data:
+            placed = False
+            for lg in line_groups:
+                lg_ymin = min(x['ymin'] for x in lg)
+                lg_ymax = max(x['ymax'] for x in lg)
+                lg_h = max(1.0, lg_ymax - lg_ymin)
+                overlap = min(b['ymax'], lg_ymax) - max(b['ymin'], lg_ymin)
+                if overlap > 0.4 * min(b['height'], lg_h):
+                    lg.append(b)
+                    placed = True
+                    break
+            if not placed:
+                line_groups.append([b])
 
-        lines = [clean_ocr_text(b[1].strip()) for b in ordered_boxes if b[1].strip()]
+        # 行间严格按垂直位置从上至下排序
+        line_groups.sort(key=lambda lg: sum(b['ymid'] for b in lg) / len(lg))
 
-        if is_multi_column:
-            # 多列设置/菜单界面：保留换行结构，以便清晰展示各项
+        # 行内文本块严格按水平位置从左至右（X递增）自然阅读排序
+        lines = []
+        for lg in line_groups:
+            lg.sort(key=lambda b: b['xmin'])
+            raw_line = " ".join(b['text'] for b in lg)
+            cleaned_line = clean_ocr_text(raw_line)
+            if cleaned_line:
+                lines.append(cleaned_line)
+
+        # 智能判定：若包含多条配置菜单项，保持换行结构；否则作为连贯自然段落拼接
+        if is_settings_menu_text(" ".join(lines)):
             full_text = "\n".join(lines)
         else:
-            # 普通段落/句子描述：按空格拼接并优化连字符排版
             full_text = " ".join(lines)
             full_text = full_text.replace("- ", "").strip()
-            # 跨行跨框二次排版清洗
+            # 跨行排版二次清洗（解决跨行连字与标点问题）
             full_text = clean_ocr_text(full_text)
         
         return full_text, lines
